@@ -9,85 +9,108 @@ This directory contains GitHub Actions workflows for continuous integration and 
 
 Runs on every commit:
 - **Web (Next.js)**: Lint, typecheck, build
-- **API (FastAPI)**: Ruff lint/format, mypy typecheck, pytest + coverage
-- **ML**: Ruff lint/format, data license check
+- **API (FastAPI)**: Ruff lint/format, mypy typecheck, pytest + coverage (via `uv`)
+- **ML**: Ruff lint/format, data license check (via `uv`)
 - **License Gate**: Validates `DATA_LICENSES.md` compliance
 
-### 2. `cd.yml` — Continuous Deployment
-**Triggers**: Push to `main`, tags `v*`, manual dispatch
+### 2. `cd.yml` — API Docker Build
+**Triggers**: Push to `main` modifying `services/api/`, tags `v*`, manual dispatch
 
-Automated deployment pipeline:
-1. Build Docker image (`linux/amd64` for RunPod)
+Builds and pushes the FastAPI API container (`services/api/Dockerfile.runpod`):
+1. Build `linux/amd64` image using Docker Buildx + GHA cache
 2. Push to Docker Hub with tags: `latest`, `sha-<short>`, semver
-3. Deploy to RunPod Serverless endpoint
 
-### 3. `pr-docker.yml` — PR Docker Validation
+### 3. `deploy-runpod.yml` — RunPod Serverless Deployment
+**Triggers**: Push to `main`, tags `v*`, manual dispatch (`inference` / `training` / `both`)
+
+Deploys to RunPod Serverless:
+1. Build inference image (`infra/runpod/serverless/inference/Dockerfile`)
+2. Build training image (`infra/runpod/serverless/training/Dockerfile`) — tags and manual `both`
+3. Update the inference endpoint via RunPod REST API + smoke test
+4. Update the training endpoint via RunPod REST API
+
+### 4. `pr-docker.yml` — PR Docker Validation
 **Triggers**: PR modifying Docker or API code
 
-Builds Docker image without pushing to validate:
-- Dockerfile syntax
-- Image builds successfully
+Builds the inference image without pushing to validate:
+- Dockerfile syntax and layer caching
+- Image builds successfully with uv
 - Python imports work inside container
 
-### 4. `deploy-web.yml` — Frontend Deployment
+### 5. `deploy-web.yml` — Frontend Deployment
 **Triggers**: Push to `main` modifying web code
 
 Deploys Next.js app to Vercel.
 
 ## Required Secrets & Variables
 
-### Docker Hub (for CD)
-Go to **Settings → Secrets and variables → Actions**:
+Set these in **Settings → Secrets and variables → Actions**.
 
-| Secret | Description |
-|--------|-------------|
-| `DOCKER_USERNAME` | Docker Hub username (`khiwnitigetintheq`) |
-| `DOCKER_PASSWORD` | Docker Hub access token (not password) |
+### Secrets
 
-### RunPod (for CD)
-| Secret | Description |
-|--------|-------------|
-| `RUNPOD_API_KEY` | Your RunPod API key |
-| `RUNPOD_ENDPOINT_ID` | The endpoint ID to update (set as Variable, not Secret) |
+| Secret | Used by | Description |
+|--------|---------|-------------|
+| `DOCKER_USERNAME` | cd, deploy-runpod | Docker Hub username |
+| `DOCKER_PASSWORD` | cd, deploy-runpod | Docker Hub access token |
+| `RUNPOD_API_KEY` | deploy-runpod | RunPod API key |
+| `VERCEL_TOKEN` | deploy-web | Vercel personal access token |
+| `VERCEL_ORG_ID` | deploy-web | Vercel organization ID |
+| `VERCEL_PROJECT_ID` | deploy-web | Vercel project ID |
 
-### Vercel (for web deploy)
-| Secret | Description |
-|--------|-------------|
-| `VERCEL_TOKEN` | Vercel personal access token |
-| `VERCEL_ORG_ID` | Vercel organization ID |
-| `VERCEL_PROJECT_ID` | Vercel project ID |
+### Variables (not secrets — safe to log)
 
-### Repository Variables
 | Variable | Example | Description |
 |----------|---------|-------------|
+| `DOCKER_USERNAME` | `khiwniti` | Docker Hub username (also as variable for image tags) |
+| `RUNPOD_INFERENCE_ENDPOINT_ID` | `abc123def` | RunPod inference endpoint ID |
+| `RUNPOD_TRAINING_ENDPOINT_ID` | `xyz789uvw` | RunPod training endpoint ID |
 | `NEXT_PUBLIC_API_URL` | `https://api.runpod.ai/v2/xxx` | RunPod endpoint URL for frontend |
 | `NEXT_PUBLIC_REGION` | `TH` | Default region for quotes |
 
-## Setting up Secrets
+## First-time RunPod Setup
 
-1. Go to https://github.com/khiwniti/roof_corrosion_mlops-/settings/secrets/actions
-2. Click **New repository secret**
-3. Add each secret from the table above
+1. Build and push the inference image manually:
+   ```bash
+   ./scripts/deploy-inference.sh docker.io/YOUR_USERNAME v1.0
+   ```
 
-## Setting up Variables
+2. This creates the RunPod endpoint and prints the `RUNPOD_INFERENCE_ENDPOINT_ID`.
 
-1. Go to https://github.com/khiwniti/roof_corrosion_mlops-/settings/variables/actions
-2. Click **New repository variable**
-3. Add `RUNPOD_ENDPOINT_ID`, `NEXT_PUBLIC_API_URL`, etc.
+3. Add that ID as a GitHub repository variable (`RUNPOD_INFERENCE_ENDPOINT_ID`).
+
+4. Subsequent pushes to `main` will update the endpoint automatically.
+
+5. For the training endpoint:
+   ```bash
+   ./scripts/deploy-training.sh docker.io/YOUR_USERNAME v1.0
+   ```
+   Add the printed endpoint ID as `RUNPOD_TRAINING_ENDPOINT_ID`.
 
 ## Testing Workflows Locally
 
-### Docker build
+### Inference Docker build
 ```bash
 docker build --platform linux/amd64 \
   -f infra/runpod/serverless/inference/Dockerfile \
   -t roof-corrosion-inference:test .
+
+docker run --rm \
+  -e REGION=TH -e PYTHONPATH=/app/src \
+  roof-corrosion-inference:test \
+  python3 -c "import app.inference.pipeline_fm; print('OK')"
 ```
 
-### API tests
+### Training Docker build
+```bash
+docker build --platform linux/amd64 \
+  -f infra/runpod/serverless/training/Dockerfile \
+  -t roof-corrosion-training:test .
+```
+
+### API tests (using uv)
 ```bash
 cd services/api
-pip install -e ".[dev]"
+uv pip install --system -e ".[dev]"
 pytest tests/ -v
 ```
 

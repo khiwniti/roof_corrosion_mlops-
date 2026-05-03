@@ -24,6 +24,8 @@ jobs:
           file: ./infra/runpod/serverless/inference/Dockerfile
           platforms: linux/amd64
           push: false
+          tags: roof-corrosion-inference:pr-test
+          load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -34,4 +36,4 @@ jobs:
             -e PIPELINE=fm \
             -e PYTHONPATH=/app/src \
             roof-corrosion-inference:pr-test \
-            python3 -c "import app.inference.pipeline_fm; print('✓ FM pipeline imports OK')"
+            python3 -c "import app.inference.pipeline_fm; print('FM pipeline imports OK')"

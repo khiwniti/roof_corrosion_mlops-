@@ -38,7 +38,7 @@ echo "Building Docker image..."
 docker build --platform linux/amd64 \
     -t "${FULL_IMAGE}" \
     -f infra/runpod/serverless/training/Dockerfile \
-    --context .
+    .
 
 # Push to registry
 echo ""
