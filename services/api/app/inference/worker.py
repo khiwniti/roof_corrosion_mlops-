@@ -112,40 +112,65 @@ def load_models(
 
 # ── Tile fetching ───────────────────────────────────────────
 
-async def fetch_tiles_for_job(job: dict) -> tuple[Optional[np.ndarray], float]:
-    """Fetch satellite tile(s) for a job's location.
+async def fetch_tiles_for_job(job: dict) -> tuple[Optional[np.ndarray], float, tuple[float, float, float, float] | None]:
+    """Fetch satellite tile(s) for a jobs location.
+
+    Auto-selects the best available imagery source based on configured keys:
+    Nearmap > Maxar > Mapbox > Esri (free, default).
 
     Returns:
-        (tile_image, gsd) — (H, W, 3) uint8 RGB array and GSD in meters
+        (tile_image, gsd, tile_bounds_latlng) where tile_bounds is
+        (min_lat, min_lng, max_lat, max_lng) for the fetched tile, or None on failure.
     """
-    from app.inference.tile_fetch import TileFetcher, TileRequest
+    from app.inference.tile_fetch import TileFetcher, TileRequest, ZOOM_TO_GSD_M
 
     fetcher = TileFetcher()
-    source = job.get("source", "maxar")
+    # Use job-specified source if given, otherwise auto-select
+    source = job.get("source") or fetcher.auto_select_source()
+    lat = job.get("lat", 0.0)
+    lng = job.get("lng", 0.0)
+
+    # Pick zoom based on source (Maxar/Nearmap support zoom 20+, Esri/Mapbox up to 19-20)
+    zoom = 20 if source in ("maxar", "nearmap") else 19
 
     try:
-        request = TileRequest(
-            lat=job.get("lat", 0),
-            lng=job.get("lng", 0),
-            zoom=20,
-            source=source,
-        )
+        request = TileRequest(lat=lat, lng=lng, zoom=zoom, source=source)
         tile_bytes = await fetcher.fetch_tile(request)
 
-        # Decode image
         from PIL import Image
         import io
 
         img = Image.open(io.BytesIO(tile_bytes)).convert("RGB")
         tile_array = np.array(img)
 
-        # GSD at zoom 20 ≈ 0.3m for Maxar, 0.07m for Nearmap
-        gsd = 0.3 if source == "maxar" else 0.07
+        gsd = TileFetcher.gsd_for(source, zoom, lat=lat)
 
-        return tile_array, gsd
+        # Compute the lat/lng bounds of this tile (used by FM pipeline to rasterize OSM polygons)
+        tile_bounds = _tile_bounds_latlng(lat, lng, zoom)
+
+        print(f"Fetched tile: source={source} zoom={zoom} gsd={gsd:.2f}m {tile_array.shape}")
+        return tile_array, gsd, tile_bounds
     except Exception as e:
-        print(f"⚠️  Failed to fetch tiles: {e}")
-        return None, 0.0
+        print(f"⚠️  Failed to fetch tiles ({source}): {e}")
+        return None, 0.0, None
+
+
+def _tile_bounds_latlng(lat: float, lng: float, zoom: int) -> tuple[float, float, float, float]:
+    """Compute the (min_lat, min_lng, max_lat, max_lng) bounds of the tile at (lat, lng, zoom)."""
+    import math
+    n = 2 ** zoom
+    x = int((lng + 180.0) / 360.0 * n)
+    lat_rad = math.radians(lat)
+    y = int((1.0 - math.log(math.tan(lat_rad) + 1 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
+
+    def _tile_to_latlng(x: int, y: int, n: int) -> tuple[float, float]:
+        lng = x / n * 360.0 - 180.0
+        lat_rad = math.atan(math.sinh(math.pi * (1 - 2 * y / n)))
+        return math.degrees(lat_rad), lng
+
+    nw_lat, nw_lng = _tile_to_latlng(x, y, n)
+    se_lat, se_lng = _tile_to_latlng(x + 1, y + 1, n)
+    return (se_lat, nw_lng, nw_lat, se_lng)
 
 
 # ── Geocoding ────────────────────────────────────────────────
@@ -224,11 +249,15 @@ def process_job(job: dict, pipeline) -> dict:
             update_job_in_supabase(job_id, {"latitude": lat, "longitude": lng})
 
         # 2. Fetch tile
-        tile_array, gsd = asyncio.run(fetch_tiles_for_job(job))
+        tile_array, gsd, tile_bounds = asyncio.run(fetch_tiles_for_job(job))
         if tile_array is None:
             raise RuntimeError("Failed to fetch satellite tile")
 
         update_job_in_supabase(job_id, {"gsd_m": gsd})
+
+        # Pass tile bounds through to the FM pipeline for OSM polygon rasterization
+        if tile_bounds is not None:
+            job["tile_bounds"] = tile_bounds
 
         # 3. Run inference — dispatch based on pipeline type
         from app.inference.pipeline_fm import FoundationModelPipeline

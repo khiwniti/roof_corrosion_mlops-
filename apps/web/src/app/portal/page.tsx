@@ -44,9 +44,11 @@ export default function PortalPage() {
     setLoading(true);
     setError(null);
     setJobResult(null);
+    setJobId(null);
 
     try {
-      const res = await fetch(`${API_BASE}/quote/`, {
+      // Use the synchronous endpoint — runs the FM pipeline inline
+      const res = await fetch(`${API_BASE}/quote/sync`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ address }),
@@ -54,6 +56,7 @@ export default function PortalPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Request failed");
       setJobId(data.job_id);
+      setJobResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -71,6 +74,20 @@ export default function PortalPage() {
       setError("Failed to fetch job status");
     }
   }, [jobId]);
+
+  // Currency-aware price formatter. THB → ฿X,XXX.XX, USD → $X,XXX.XX, etc.
+  const formatPrice = (amount: number, currency: string) => {
+    try {
+      return new Intl.NumberFormat(currency === "THB" ? "th-TH" : "en-US", {
+        style: "currency",
+        currency,
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2,
+      }).format(amount);
+    } catch {
+      return `${currency} ${amount.toLocaleString()}`;
+    }
+  };
 
   const severityColor = (s: string) => {
     switch (s) {
@@ -225,8 +242,12 @@ export default function PortalPage() {
                     <td className="py-2 text-slate-900">{item.description}</td>
                     <td className="py-2 text-right">{item.quantity}</td>
                     <td className="py-2 text-right">{item.unit}</td>
-                    <td className="py-2 text-right">${item.unit_price.toFixed(2)}</td>
-                    <td className="py-2 text-right font-medium">${item.total.toFixed(2)}</td>
+                    <td className="py-2 text-right">
+                      {formatPrice(item.unit_price, jobResult.quote!.currency)}
+                    </td>
+                    <td className="py-2 text-right font-medium">
+                      {formatPrice(item.total, jobResult.quote!.currency)}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -234,7 +255,7 @@ export default function PortalPage() {
             <div className="flex justify-between items-center pt-4 border-t">
               <span className="text-lg font-bold text-slate-900">Total</span>
               <span className="text-2xl font-bold text-orange-500">
-                {jobResult.quote.currency} {jobResult.quote.total_amount.toFixed(2)}
+                {formatPrice(jobResult.quote.total_amount, jobResult.quote.currency)}
               </span>
             </div>
           </div>
