@@ -7,13 +7,25 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
-    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\""
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+
+    "dev": "concurrently -n web,api,worker -c blue,green,yellow \"pnpm:dev:web\" \"pnpm:dev:api\" \"pnpm:dev:worker\"",
+    "dev:web": "pnpm --filter @roof-corrosion/web dev",
+    "dev:api": "bash scripts/dev-api.sh",
+    "dev:worker": "bash scripts/dev-worker.sh",
+    "dev:relabel": "bash scripts/dev-relabel-worker.sh",
+    "dev:web-only": "pnpm --filter @roof-corrosion/web dev",
+    "dev:api-only": "bash scripts/dev-api.sh",
+
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "devDependencies": {
+    "concurrently": "^9.2.1",
     "prettier": "^3.3.0",
     "turbo": "^2.0.0"
   },

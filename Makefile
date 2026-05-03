@@ -14,20 +14,20 @@ install: ## Install all dependencies
 	cd ml && uv venv .venv --python 3.11 && . .venv/bin/activate && uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && uv pip install -e ".[dev]"
 
 # ── Development ──────────────────────────────────────────────
-dev-api: ## Start FastAPI dev server
-	cd services/api && . .venv/bin/activate && uvicorn app.main:app --reload --port 8000
+dev: ## Start all services (web + API + worker) via pnpm
+	pnpm dev
 
-dev-web: ## Start Next.js dev server
-	cd apps/web && pnpm dev
+dev-api: ## Start FastAPI dev server only
+	bash scripts/dev-api.sh
 
-dev-worker: ## Start inference worker
-	cd services/api && . .venv/bin/activate && python -m app.inference.worker --poll-interval 5
+dev-web: ## Start Next.js dev server only
+	pnpm dev:web-only
 
-dev: ## Start all dev services (API + web + worker)
-	@echo "Start each in separate terminals:"
-	@echo "  make dev-api"
-	@echo "  make dev-web"
-	@echo "  make dev-worker"
+dev-worker: ## Start inference worker only
+	bash scripts/dev-worker.sh
+
+dev-relabel: ## Start relabeling worker only
+	bash scripts/dev-relabel-worker.sh
 
 # ── Docker ────────────────────────────────────────────────────
 docker-up: ## Start local MLOps stack (MLflow, Redis, Label Studio, etc.)
