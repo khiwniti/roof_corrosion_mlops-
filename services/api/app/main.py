@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.middleware import RateLimitMiddleware
 from app.routes import health, quote, feedback, metrics
 
 app = FastAPI(
@@ -11,6 +12,7 @@ app = FastAPI(
     description="Satellite-based roof corrosion detection and quoting service",
 )
 
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],  # Vercel dev proxy
