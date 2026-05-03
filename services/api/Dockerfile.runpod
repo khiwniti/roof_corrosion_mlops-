@@ -1,24 +1,83 @@
-FROM python:3.11-slim
+# FastAPI Inference Service — Production
+#
+# Production-hardened: multi-stage, non-root, pinned versions, health check.
+# Serves the roof corrosion API on port 8000.
+#
+# Build (from services/api):
+#   docker build --platform linux/amd64 \
+#     -f Dockerfile.runpod \
+#     -t docker.io/YOUR_USER/roof-corrosion-api:latest \
+#     .
+#
+# Run locally:
+#   docker run -p 8000:8000 -e REGION=TH roof-corrosion-api:latest
+#
+# Deploy:
+#   ./scripts/deploy-production.sh api
 
-WORKDIR /app
+# ── Stage 1: Builder ──────────────────────────────────────────────────────
+FROM python:3.11.9-slim-bookworm AS builder
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+WORKDIR /build
 
-# System deps for rasterio/gdal
+# Install uv (pinned for reproducibility)
+COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /usr/local/bin/uv
+
+# System build deps for rasterio/gdal
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gdal-bin libgdal-dev gcc g++ && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python deps via uv (layer-cached)
+# Install Python deps into a venv for clean layer separation
 COPY pyproject.toml ./
-RUN uv pip install --system --no-cache -e .
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+# Install with dev extras for full functionality; strip in runtime if needed
+RUN uv pip install --no-cache -e "."
 
-COPY app/ ./app/
+# ── Stage 2: Runtime ──────────────────────────────────────────────────────
+FROM python:3.11.9-slim-bookworm AS runtime
+
+LABEL org.opencontainers.image.title="roof-corrosion-api"
+LABEL org.opencontainers.image.description="FastAPI roof corrosion inference + quote service"
+LABEL org.opencontainers.image.source="https://github.com/khiwniti/roof_corrosion_mlops"
+
+# Install uv in runtime for any dynamic installs
+COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /usr/local/bin/uv
+
+# Runtime system deps only (no -dev headers, no compilers)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gdal-bin libgdal-dev libgl1 libglib2.0-0 \
+    curl dumb-init && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy venv from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
+
+WORKDIR /app
+
+# Copy application code
+COPY --chown=appuser:appuser app/ ./app/
+
+# Environment configuration
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV LOG_LEVEL=INFO
+ENV REGION=TH
+ENV PIPELINE=fm
+ENV MIN_CONFIDENCE=0.6
+
+# Switch to non-root user
+USER appuser
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=10s \
+  CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--loop", "uvloop", "--http", "httptools"]

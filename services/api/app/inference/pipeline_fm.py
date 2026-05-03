@@ -40,7 +40,7 @@ import numpy as np
 
 from app.inference.footprint_client import BuildingFootprintClient, polygon_area_m2
 from app.inference.nim_client import NIMError, NIMVisionClient
-from app.inference.pipeline import CorrosionResult, classify_severity
+from app.inference.types import CorrosionResult, classify_severity
 from app.inference.sam_client import SAMClient
 
 logger = logging.getLogger(__name__)

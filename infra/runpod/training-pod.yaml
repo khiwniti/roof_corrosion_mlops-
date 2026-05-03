@@ -1,13 +1,11 @@
-# RunPod training pod configuration
+# RunPod training pod configuration — Production
 # For model training and HPO
-
 pod_name: roof-corrosion-training
-image: roof-corrosion-ml:latest
+image: docker.io/khiwnitigetintheq/roof-corrosion-training:latest
 gpu_type: NVIDIA_A100_80GB  # Large VRAM for Mask2Former + HPO
 gpu_count: 1
 vcpu_count: 8
 memory_in_gb: 32
-
 volumes:
   - name: training-data
     mount_path: /app/data
@@ -15,9 +13,16 @@ volumes:
   - name: model-cache
     mount_path: /app/models
     size_gb: 50
-
 env:
+  - name: MODELS_DIR
+    value: "/app/models"
+  - name: DATA_DIR
+    value: "/app/data"
+  - name: PYTHONUNBUFFERED
+    value: "1"
+  - name: LOG_LEVEL
+    value: "INFO"
   - name: MLFLOW_TRACKING_URI
-    value: http://mlops-pod:5000
+    value: "http://mlops-pod:5000"
   - name: AWS_S3_BUCKET
-    value: roof-corrosion-mlops
+    value: "roof-corrosion-mlops"

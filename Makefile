@@ -1,7 +1,8 @@
 # Roof Corrosion MLOps — Makefile
 # Common commands for development, training, and deployment
 
-.PHONY: help install dev test train eval docker lint clean
+.PHONY: help install dev test train eval docker lint clean \
+       docker-build docker-push deploy deploy-inference deploy-training deploy-api
 
 # ── Help ─────────────────────────────────────────────────────
 help: ## Show this help
@@ -103,3 +104,51 @@ clean: ## Remove build artifacts and caches
 	find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name node_modules -exec rm -rf {} + 2>/dev/null || true
 	rm -rf apps/web/.next services/api/.venv ml/.venv .turbo
+
+# ── Production Docker ─────────────────────────────────────────
+DOCKER_USERNAME ?= khiwnitigetintheq
+DOCKER_TAG ?= latest
+
+docker-build-inference: ## Build inference Docker image (prod)
+	docker buildx build --platform linux/amd64 \
+		-f infra/runpod/serverless/inference/Dockerfile \
+		-t docker.io/$(DOCKER_USERNAME)/roof-corrosion-inference:$(DOCKER_TAG) \
+		.
+
+docker-build-training: ## Build training Docker image (prod)
+	docker buildx build --platform linux/amd64 \
+		-f infra/runpod/serverless/training/Dockerfile \
+		-t docker.io/$(DOCKER_USERNAME)/roof-corrosion-training:$(DOCKER_TAG) \
+		.
+
+docker-build-api: ## Build API Docker image (prod)
+	docker buildx build --platform linux/amd64 \
+		-f services/api/Dockerfile.runpod \
+		-t docker.io/$(DOCKER_USERNAME)/roof-corrosion-api:$(DOCKER_TAG) \
+		services/api
+
+docker-build: docker-build-inference docker-build-training docker-build-api ## Build all production images
+
+docker-push-inference: ## Push inference image to registry
+	docker push docker.io/$(DOCKER_USERNAME)/roof-corrosion-inference:$(DOCKER_TAG)
+
+docker-push-training: ## Push training image to registry
+	docker push docker.io/$(DOCKER_USERNAME)/roof-corrosion-training:$(DOCKER_TAG)
+
+docker-push-api: ## Push API image to registry
+	docker push docker.io/$(DOCKER_USERNAME)/roof-corrosion-api:$(DOCKER_TAG)
+
+docker-push: docker-push-inference docker-push-training docker-push-api ## Push all images
+
+# ── Production Deploy ─────────────────────────────────────────
+deploy-inference: ## Deploy inference to RunPod Serverless
+	bash scripts/deploy-production.sh inference
+
+deploy-training: ## Deploy training to RunPod Serverless
+	bash scripts/deploy-production.sh training
+
+deploy-api: ## Deploy API as RunPod pod
+	bash scripts/deploy-production.sh api
+
+deploy: ## Deploy all services to production
+	bash scripts/deploy-production.sh all

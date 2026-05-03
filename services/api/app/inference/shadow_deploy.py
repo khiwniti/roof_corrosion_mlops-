@@ -28,7 +28,8 @@ from typing import Optional
 import numpy as np
 import torch
 
-from app.inference.pipeline import CorrosionPipeline, CorrosionResult
+from app.inference.pipeline import CorrosionPipeline
+from app.inference.types import CorrosionResult
 
 
 @dataclass

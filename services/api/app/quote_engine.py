@@ -7,8 +7,6 @@ using the price book. Includes confidence gating for human review.
 from dataclasses import dataclass
 from typing import Optional
 
-from app.db import PriceBookEntry, get_supabase
-
 
 @dataclass
 class QuoteResult:
@@ -71,6 +69,7 @@ def compute_quote(
     # ── Fetch prices from price book → region fallback → defaults ───
     price_map: dict[str, float] = {}
     try:
+        from app.db import get_supabase
         supabase = get_supabase()
         prices = (
             supabase.table("price_book")

@@ -1,41 +1,74 @@
-# Git
+# ── Version control ───────────────────────────────────────────
 .git
 .gitignore
 
-# Node
-node_modules
-apps/web/node_modules
-apps/web/.next
-packages/*/node_modules
+# ── CI/CD ─────────────────────────────────────────────────────
+.github
 
-# Python caches
-**/__pycache__
-**/*.pyc
-**/*.pyo
-**/.pytest_cache
-**/.mypy_cache
-**/.ruff_cache
+# ── IDE / editor / AI ────────────────────────────────────────
+.vscode
+.idea
+.claude
+.codeium
+.planning
+*.swp
+*.swo
+*~
+
+# ── Node.js ───────────────────────────────────────────────────
+node_modules
+.pnpm-store
+apps/web/.next
+apps/web/node_modules
+packages/*/node_modules
+.turbo
+
+# ── Python ────────────────────────────────────────────────────
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+*.egg-info
+.eggs
+*.egg
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.venv
+venv
+env
 services/api/.venv
 ml/.venv
 
-# ML data (large, not needed in container)
+# ── ML artifacts (never in Docker image) ──────────────────────
+mlruns
+mlartifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.trt
+*.bin
+*.safetensors
+wandb
+.dvc
+.dvc/cache
 data/
 ml/data/
 ml/models/
-**/*.pt
-**/*.pth
-**/*.ckpt
-**/*.safetensors
 
-# Planning / docs
-.planning/
-.claude/
-.codeium/
-
-# Env files with secrets
+# ── Environment / secrets ─────────────────────────────────────
 .env
 .env.local
-**/.env.local
+.env.production
+.env.*.local
 
-# macOS
+# ── OS ────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+
+# ── Build artifacts not needed in containers ──────────────────
+coverage
+.coverage
+htmlcov
+coverage.xml

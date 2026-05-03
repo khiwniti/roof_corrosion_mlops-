@@ -29,7 +29,8 @@ import numpy as np
 import torch
 
 from app.db import get_supabase
-from app.inference.pipeline import CorrosionPipeline, classify_severity
+from app.inference.pipeline import CorrosionPipeline
+from app.inference.types import classify_severity
 from app.queue import (
     QUOTE_QUEUE,
     RELABEL_QUEUE,

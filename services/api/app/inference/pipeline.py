@@ -6,46 +6,14 @@ or HuggingFace Hub, with TorchScript/TensorRT optimization.
 
 import os
 import time
-from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+from app.inference.types import CorrosionResult, classify_severity
 from app.routes.metrics import MODEL_INFERENCE_TIME, MODEL_CONFIDENCE
-
-
-@dataclass
-class CorrosionResult:
-    """Output of the two-stage corrosion analysis pipeline."""
-
-    roof_area_m2: float
-    corroded_area_m2: float
-    corrosion_percent: float
-    severity: str  # none | light | moderate | severe
-    confidence: float
-    roof_mask: np.ndarray  # (H, W) binary
-    corrosion_mask: np.ndarray  # (H, W) binary
-    gsd: float  # meters per pixel
-    roof_model_version: str = ""
-    corrosion_model_version: str = ""
-
-
-SEVERITY_THRESHOLDS = {
-    "none": 0.0,
-    "light": 5.0,
-    "moderate": 25.0,
-    "severe": 50.0,
-}
-
-
-def classify_severity(corrosion_percent: float) -> str:
-    """Map corrosion percentage to severity grade."""
-    for severity, threshold in reversed(SEVERITY_THRESHOLDS.items()):
-        if corrosion_percent >= threshold:
-            return severity
-    return "none"
 
 
 class CorrosionPipeline:

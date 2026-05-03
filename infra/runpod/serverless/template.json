@@ -1,6 +1,6 @@
 {
   "title": "Roof Corrosion Inference (Thailand)",
-  "description": "Satellite-based roof corrosion detection with foundation models (NVIDIA NIM VLM + OSM). Returns corrosion assessment and THB repair quotes.",
+  "description": "Production satellite-based roof corrosion detection with foundation models (NVIDIA NIM VLM + OSM). Returns corrosion assessment and THB repair quotes. Multi-stage Docker, non-root, health-checked.",
   "type": "serverless",
   "category": "image",
   "iconUrl": "https://raw.githubusercontent.com/khiwniti/roof_corrosion_mlops-/main/assets/icon.png",
@@ -13,7 +13,7 @@
       "Tesla T4"
     ],
     "workersMin": 0,
-    "workersMax": 2,
+    "workersMax": 3,
     "idleTimeout": 300,
     "flashboot": true,
     "imageName": "docker.io/khiwnitigetintheq/roof-corrosion-inference:latest",
@@ -37,6 +37,10 @@
       {
         "key": "MIN_CONFIDENCE",
         "value": "0.6"
+      },
+      {
+        "key": "LOG_LEVEL",
+        "value": "INFO"
       },
       {
         "key": "NVIDIA_API_KEY",
