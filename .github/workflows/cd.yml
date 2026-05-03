@@ -1,27 +1,26 @@
-name: CD
+name: CD — API Docker Build
+
+# Builds and pushes the FastAPI API container (services/api/Dockerfile.runpod).
+# RunPod serverless endpoint deployment is handled by deploy-runpod.yml.
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'services/api/**'
+      - '.github/workflows/cd.yml'
     tags: ['v*']
   workflow_dispatch:
-    inputs:
-      deploy:
-        description: 'Deploy to RunPod?'
-        type: boolean
-        default: false
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: khiwnitigetintheq/roof-corrosion-inference
+  IMAGE_NAME: ${{ vars.DOCKER_USERNAME || 'khiwniti' }}/roof-corrosion-api
 
 jobs:
-  # ── Build & Push Docker Image ────────────────────────────
   build-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -42,43 +41,17 @@ jobs:
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=,suffix=,format=short
-            latest
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push
+      - name: Build and push API image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./infra/runpod/serverless/inference/Dockerfile
+          context: ./services/api
+          file: ./services/api/Dockerfile.runpod
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # ── Deploy to RunPod Serverless ──────────────────────────
-  deploy-runpod:
-    runs-on: ubuntu-latest
-    needs: build-push
-    if: github.ref == 'refs/heads/main' || github.event.inputs.deploy == 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy to RunPod
-        run: |
-          curl -s -X POST "https://rest.runpod.io/v2/endpoints/${{ vars.RUNPOD_ENDPOINT_ID }}/update" \
-            -H "Authorization: Bearer ${{ secrets.RUNPOD_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "imageName": "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
-            }'
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-
-      - name: Verify deployment
-        run: |
-          sleep 30
-          curl -s -H "Authorization: Bearer ${{ secrets.RUNPOD_API_KEY }}" \
-            "https://rest.runpod.io/v2/endpoints/${{ vars.RUNPOD_ENDPOINT_ID }}" | jq '.imageName'

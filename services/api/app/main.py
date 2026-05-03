@@ -1,10 +1,24 @@
 """FastAPI inference service for roof corrosion detection."""
 
+import logging
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.middleware import RateLimitMiddleware
 from app.routes import health, quote, feedback, metrics
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+
+_allowed_origins_raw = os.getenv(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3000",
+)
+_allowed_origins = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()]
 
 app = FastAPI(
     title="Roof Corrosion AI API",
@@ -15,7 +29,7 @@ app = FastAPI(
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Vercel dev proxy
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
