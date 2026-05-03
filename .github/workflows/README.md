@@ -44,6 +44,8 @@ Deploys Next.js app to Vercel.
 
 ## Required Secrets & Variables
 
+> **Without these secrets the build still runs — the image is built but not pushed, and RunPod deployment is skipped.** Add them when you're ready to ship.
+
 Set these in **Settings → Secrets and variables → Actions**.
 
 ### Secrets
