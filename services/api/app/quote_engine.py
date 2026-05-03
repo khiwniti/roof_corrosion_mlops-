@@ -45,9 +45,15 @@ def compute_quote(
     - Always include inspection fee
     - Confidence gating: if confidence < 0.7, flag for human review
     """
+    from app.region import get_active_region
+
     line_items = []
     requires_review = False
     review_reason = None
+
+    # ── Active region (Thailand by default) ─────────────────
+    active_region = get_active_region()
+    currency = active_region.currency
 
     # ── Confidence gate ─────────────────────────────────────
     if confidence < CONFIDENCE_REVIEW_THRESHOLD:
@@ -62,26 +68,36 @@ def compute_quote(
         requires_review = True
         review_reason = (review_reason or "") + f" Large roof area ({roof_area_m2:.0f} m²)."
 
-    # ── Fetch prices from price book ────────────────────────
+    # ── Fetch prices from price book → region fallback → defaults ───
+    price_map: dict[str, float] = {}
     try:
         supabase = get_supabase()
-        prices = supabase.table("price_book").select("*").eq("material", material).eq("region", region).execute()
+        prices = (
+            supabase.table("price_book")
+            .select("*")
+            .eq("material", material)
+            .eq("region", region if region != "default" else active_region.code)
+            .execute()
+        )
         price_map = {p["service_type"]: p["price_per_m2"] for p in prices.data}
     except Exception:
-        # Fallback prices if DB not available
-        price_map = {
-            "replacement": 45.00,
-            "repair": 25.00,
-            "coating": 15.00,
-        }
+        pass
 
-    # ── Inspection fee (flat) ───────────────────────────────
+    # Layer in region defaults for any service not found in DB
+    for service, price in active_region.price_per_m2.items():
+        price_map.setdefault(service, price)
+
+    # ── Inspection fee (flat, currency-aware) ───────────────
+    inspection_fee = price_map.get(
+        "inspection_flat",
+        active_region.price_per_m2.get("inspection_flat", 150.0),
+    )
     line_items.append({
         "description": "Satellite roof inspection & corrosion analysis",
         "quantity": 1,
         "unit": "each",
-        "unit_price": 150.00,
-        "total": 150.00,
+        "unit_price": inspection_fee,
+        "total": inspection_fee,
     })
 
     # ── Service recommendations based on severity ───────────
@@ -153,6 +169,7 @@ def compute_quote(
     return QuoteResult(
         total_amount=round(total, 2),
         line_items=line_items,
+        currency=currency,
         requires_human_review=requires_review,
         review_reason=review_reason.strip() if review_reason else None,
     )

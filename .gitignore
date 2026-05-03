@@ -44,7 +44,13 @@ data/airs/
 data/caribbean/
 data/xbd/
 data/landcover/
+data/thailand/
+data/maxar_cache/
+data/nearmap_cache/
 models/
+# Allow checked-in data documentation
+!data/README.md
+!data/.gitkeep
 !data/.gitkeep
 
 # Environment

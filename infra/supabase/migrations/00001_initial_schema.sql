@@ -147,15 +147,24 @@ CREATE TABLE price_book (
     UNIQUE(material, service_type, region, effective_from)
 );
 
--- Seed price book with defaults
-INSERT INTO price_book (material, service_type, region, price_per_m2) VALUES
-    ('corrugated_metal', 'replacement', 'default', 45.00),
-    ('corrugated_metal', 'repair', 'default', 25.00),
-    ('corrugated_metal', 'coating', 'default', 15.00),
-    ('tile', 'replacement', 'default', 65.00),
-    ('tile', 'repair', 'default', 35.00),
-    ('asphalt_shingle', 'replacement', 'default', 55.00),
-    ('asphalt_shingle', 'repair', 'default', 30.00);
+-- Seed price book with Thailand (THB) defaults — primary market.
+-- Prices are representative THB/m² for Thai suppliers (BlueScope, SCG, local steel).
+INSERT INTO price_book (material, service_type, region, price_per_m2, currency) VALUES
+    -- Corrugated galvanized zinc/steel — the dominant Thai residential/industrial roof
+    ('corrugated_metal', 'replacement', 'TH', 850.00, 'THB'),
+    ('corrugated_metal', 'repair',      'TH', 450.00, 'THB'),
+    ('corrugated_metal', 'coating',     'TH', 280.00, 'THB'),
+    -- Ceramic / terracotta tile — traditional Thai roofs
+    ('tile',             'replacement', 'TH', 1200.00, 'THB'),
+    ('tile',             'repair',      'TH',  650.00, 'THB'),
+    -- Keep global defaults for non-TH markets (USD)
+    ('corrugated_metal', 'replacement', 'default', 45.00, 'USD'),
+    ('corrugated_metal', 'repair',      'default', 25.00, 'USD'),
+    ('corrugated_metal', 'coating',     'default', 15.00, 'USD'),
+    ('tile',             'replacement', 'default', 65.00, 'USD'),
+    ('tile',             'repair',      'default', 35.00, 'USD'),
+    ('asphalt_shingle',  'replacement', 'default', 55.00, 'USD'),
+    ('asphalt_shingle',  'repair',      'default', 30.00, 'USD');
 
 -- ── Model registry (audit trail) ──────────────────────────
 CREATE TABLE model_versions (

@@ -1,6 +1,8 @@
-# Roof Corrosion AI — Satellite Roof Analysis & Quoting
+# Roof Corrosion AI — Thailand 🇹🇭
 
-Production MLOps system that turns a customer's address into a roof-replacement/repair quote derived from high-resolution satellite imagery of corrosion.
+Production MLOps system that turns a Thai customer's address into a roof-replacement/repair quote (in THB) derived from high-resolution satellite imagery of corrosion.
+
+**Scope: Thailand-first.** No global datasets are bundled — the foundation-model pipeline (OSM Overpass + NVIDIA NIM Vision LLM) works globally without bulk data, and pricing/prompts/geocoding are tuned for Thai metal roofs and the monsoon climate. Set `REGION=US` to switch markets.
 
 ## Architecture
 
@@ -72,14 +74,20 @@ Requires free accounts on DrivenData (Caribbean), GitHub (AIRS), and AWS (SpaceN
 # 1. Get free NVIDIA API key at https://build.nvidia.com (1,000 credits)
 echo "NVIDIA_API_KEY=nvapi-..." >> .env.local
 echo "PIPELINE=fm" >> .env.local
+echo "REGION=TH"     >> .env.local   # Thailand-first; THB pricing + Thai geocoder
 
 # 2. Start the API — FM pipeline auto-loads
 make dev-api
 
-# 3. Test with a real address
+# 3. Test with a Thai address
 curl -X POST http://localhost:8000/quote \
   -H "Content-Type: application/json" \
-  -d '{"address": "350 5th Ave, New York, NY 10118"}'
+  -d '{"address": "88 Bangna-Trad Rd, Samut Prakan 10540, Thailand"}'
+
+# Other tested Thai addresses:
+#   "Chatuchak Market, Bangkok"
+#   "Chiang Mai International Airport"
+#   "Patong Beach, Phuket"
 ```
 
 The FM pipeline uses OSM for roof polygons and NVIDIA NIM (Llama 3.2 90B Vision) for corrosion assessment. No GPU, no training, no labeled data required.

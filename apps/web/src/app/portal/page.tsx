@@ -109,7 +109,7 @@ export default function PortalPage() {
             type="text"
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            placeholder="e.g. 123 Industrial Blvd, Jakarta, Indonesia"
+            placeholder="e.g. 88 Bangna-Trad Rd, Samut Prakan, Thailand"
             className="flex-1 px-4 py-3 border rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-400"
             onKeyDown={(e) => e.key === "Enter" && submitJob()}
           />

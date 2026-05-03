@@ -41,7 +41,7 @@ def seed():
         "company_name": "Test Industrial Corp",
     }).execute()
 
-    # Sample job
+    # Sample job — Thai industrial warehouse in Samut Prakan
     job_id = str(uuid4())
     print(f"Creating sample job: {job_id}")
     supabase.table("jobs").insert({
@@ -49,17 +49,17 @@ def seed():
         "customer_id": customer_id,
         "status": "completed",
         "source": "maxar",
-        "address": "Jl. Industri Raya No. 42, Jakarta Industrial Park, Cakung, Jakarta Timur",
-        "latitude": -6.2088,
-        "longitude": 106.8456,
+        "address": "88 Bangna-Trad Rd, Bang Sao Thong, Samut Prakan 10540, Thailand",
+        "latitude": 13.5924,
+        "longitude": 100.7866,
         "gsd_m": 0.3,
         "tile_capture_date": "2024-06-15",
         "submitted_at": (datetime.utcnow() - timedelta(hours=2)).isoformat(),
         "started_at": (datetime.utcnow() - timedelta(hours=2, minutes=1)).isoformat(),
         "completed_at": (datetime.utcnow() - timedelta(hours=1, minutes=55)).isoformat(),
         "processing_time_ms": 45000,
-        "roof_model_version": "roof_detector/v0.1.0-dev",
-        "corrosion_model_version": "corrosion_detector/v0.1.0-dev",
+        "roof_model_version": "osm+nim/llama-3.2-90b-vision",
+        "corrosion_model_version": "nvidia-nim/llama-3.2-90b-vision-instruct",
     }).execute()
 
     # Assessment
@@ -75,20 +75,28 @@ def seed():
         "confidence": 0.78,
     }).execute()
 
-    # Quote
+    # Quote — Thailand pricing in THB
     quote_id = str(uuid4())
     print(f"Creating quote: {quote_id}")
+    # Pricing: THB 450/m² repair, THB 280/m² coating, THB 850/m² replacement
+    repair_total = round(85.5 * 850.00, 2)       # corroded section replacement
+    coating_area = round(320.0 - 85.5, 1)
+    coating_total = round(coating_area * 280.00, 2)
+    waste_qty = round(85.5 * 0.10, 1)
+    waste_total = round(waste_qty * 850.00, 2)
+    inspection_total = 2500.00
+    grand_total = inspection_total + repair_total + coating_total + waste_total
     supabase.table("quotes").insert({
         "id": quote_id,
         "job_id": job_id,
         "assessment_id": assessment_id,
-        "currency": "USD",
-        "total_amount": 7155.00,
+        "currency": "THB",
+        "total_amount": round(grand_total, 2),
         "line_items": [
-            {"description": "Satellite roof inspection & corrosion analysis", "quantity": 1, "unit": "each", "unit_price": 150.00, "total": 150.00},
-            {"description": "Corroded section replacement (moderate)", "quantity": 85.5, "unit": "m²", "unit_price": 45.00, "total": 3847.50},
-            {"description": "Protective coating (remaining roof)", "quantity": 234.5, "unit": "m²", "unit_price": 15.00, "total": 3517.50},
-            {"description": "Waste allowance (10%)", "quantity": 8.6, "unit": "m²", "unit_price": 45.00, "total": 387.00},
+            {"description": "Satellite roof inspection & corrosion analysis", "quantity": 1, "unit": "each", "unit_price": 2500.00, "total": 2500.00},
+            {"description": "Corroded section replacement (moderate)", "quantity": 85.5, "unit": "m²", "unit_price": 850.00, "total": repair_total},
+            {"description": "Protective anti-rust coating (remaining roof)", "quantity": coating_area, "unit": "m²", "unit_price": 280.00, "total": coating_total},
+            {"description": "Waste allowance (10%)", "quantity": waste_qty, "unit": "m²", "unit_price": 850.00, "total": waste_total},
         ],
         "requires_human_review": False,
         "valid_until": (datetime.utcnow() + timedelta(days=30)).isoformat(),
@@ -97,7 +105,8 @@ def seed():
     print(f"\nSeed data created:")
     print(f"  Customer: test@roofcorrosion.ai")
     print(f"  Job:      {job_id}")
-    print(f"  Quote:    USD 7,155.00 (moderate corrosion, 26.7%)")
+    print(f"  Address:  Bangna-Trad Rd, Samut Prakan, Thailand")
+    print(f"  Quote:    THB {grand_total:,.2f} (moderate corrosion, 26.7%)")
 
 
 if __name__ == "__main__":

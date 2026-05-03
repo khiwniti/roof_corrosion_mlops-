@@ -69,6 +69,16 @@ Always respond with ONLY a JSON object, no prose. Use this exact schema:
 
 def build_user_prompt(gsd: float, address: str = "", roof_context: str = "") -> str:
     """Build the user turn for the VLM."""
+    # Inject active-region hint (Thailand by default) into roof_context if none given
+    if not roof_context:
+        try:
+            from app.region import get_active_region
+            region = get_active_region()
+            if region.roof_context_hint:
+                roof_context = region.roof_context_hint
+        except Exception:
+            pass
+
     parts = [
         "Analyze this overhead image of a rooftop for metal corrosion.",
         f"Ground sample distance: approximately {gsd*100:.0f}cm per pixel.",
@@ -76,7 +86,7 @@ def build_user_prompt(gsd: float, address: str = "", roof_context: str = "") -> 
     if address:
         parts.append(f"Property address (for regional context): {address}")
     if roof_context:
-        parts.append(f"Roof context: {roof_context}")
+        parts.append(f"Regional / roof context: {roof_context}")
     parts.append("")
     parts.append("Return your assessment as a single JSON object per the schema.")
     return " ".join(parts)

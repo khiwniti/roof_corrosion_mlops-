@@ -151,21 +151,47 @@ async def fetch_tiles_for_job(job: dict) -> tuple[Optional[np.ndarray], float]:
 # ── Geocoding ────────────────────────────────────────────────
 
 async def geocode_address(address: str) -> tuple[float, float]:
-    """Geocode an address to lat/lng using Nominatim (free) or Mapbox."""
+    """Geocode an address to lat/lng using Nominatim (free), biased to active region.
+
+    The active region (default: Thailand) is passed to Nominatim via
+    `countrycodes` and `viewbox` to prefer in-region matches. Out-of-region
+    results raise a RegionError — caller can surface this to the UI.
+    """
     import httpx
+    from app.region import get_active_region, is_in_region
 
-    # Use Nominatim (free, rate-limited) for baseline
+    region = get_active_region()
+    params: dict = {"q": address, "format": "json", "limit": 3}
+
+    # Bias to active region
+    if region.country_code:
+        params["countrycodes"] = region.country_code
+    if region.bbox:
+        min_lat, min_lng, max_lat, max_lng = region.bbox
+        # Nominatim viewbox format: minlng,minlat,maxlng,maxlat
+        params["viewbox"] = f"{min_lng},{min_lat},{max_lng},{max_lat}"
+        params["bounded"] = 1
+    if region.osm_locale:
+        params["accept-language"] = f"{region.osm_locale},en"
+
     url = "https://nominatim.openstreetmap.org/search"
-    params = {"q": address, "format": "json", "limit": 1}
-
     async with httpx.AsyncClient() as client:
-        response = await client.get(url, params=params, headers={"User-Agent": "roof-corrosion-ai/0.1"})
+        response = await client.get(
+            url, params=params,
+            headers={"User-Agent": "roof-corrosion-ai/0.1"},
+        )
         data = response.json()
 
-    if data:
-        return float(data[0]["lat"]), float(data[0]["lon"])
+    for match in data or []:
+        lat = float(match["lat"])
+        lng = float(match["lon"])
+        if is_in_region(lat, lng, region):
+            return lat, lng
 
-    raise ValueError(f"Geocoding failed for address: {address}")
+    raise ValueError(
+        f"No in-region ({region.code}) geocoding result for: {address}. "
+        f"Set REGION env var if you meant a different country."
+    )
 
 
 # ── Main worker loop ─────────────────────────────────────────
