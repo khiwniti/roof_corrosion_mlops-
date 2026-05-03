@@ -1,0 +1,40 @@
+# Stage 1: Roof footprint segmentation config
+# Architecture: Mask2Former pretrained on SpaceNet → fine-tuned on AIRS
+
+dataset: airs  # airs | spacenet
+
+data:
+  # AIRS paths (override via CLI or env)
+  train_image_dir: data/airs/train/images
+  train_mask_dir: data/airs/train/masks
+  val_image_dir: data/airs/val/images
+  val_mask_dir: data/airs/val/masks
+  # SpaceNet paths (used when dataset=spacenet)
+  train_labels: data/spacenet/train/labels.geojson
+  val_labels: data/spacenet/val/labels.geojson
+
+model:
+  name: mask2former-swin-small
+  pretrained: facebook/mask2former-swin-small-ade-mh-22k
+  num_classes: 2  # background + roof
+
+training:
+  batch_size: 4
+  lr: 1.0e-4
+  epochs: 50
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  warmup_epochs: 5
+
+augmentation:
+  horizontal_flip: true
+  vertical_flip: true
+  rotation_limit: 45
+  brightness_limit: 0.2
+  contrast_limit: 0.2
+  jpeg_compression: 95
+  gsd_jitter: 0.1  # ±10% GSD variation
+
+frozen_test:
+  dir: data/frozen_test
+  iou_threshold: 0.85  # gate for production

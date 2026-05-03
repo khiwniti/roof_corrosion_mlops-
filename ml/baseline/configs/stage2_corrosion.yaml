@@ -1,0 +1,43 @@
+# Stage 2: Corrosion segmentation config
+# Architecture: SegFormer-B2 fine-tuned on Caribbean irregular_metal
+
+data:
+  train_image_dir: data/caribbean/train/images
+  train_labels: data/caribbean/train/labels.geojson
+  val_image_dir: data/caribbean/val/images
+  val_labels: data/caribbean/val/labels.geojson
+
+model:
+  name: segformer-b2
+  pretrained: nvidia/segformer-b2-finetuned-ade-512-512
+  num_classes: 3  # background + roof + corrosion
+
+training:
+  batch_size: 8
+  lr: 5.0e-5
+  epochs: 80
+  weight_decay: 1.0e-4
+  scheduler: cosine
+  warmup_epochs: 5
+  focal_alpha: 0.25  # class imbalance weight
+  focal_gamma: 2.0
+
+augmentation:
+  horizontal_flip: true
+  vertical_flip: true
+  rotation_limit: 360  # overhead view — full rotation OK
+  brightness_limit: 0.3
+  contrast_limit: 0.3
+  jpeg_compression: 90
+  gsd_jitter: 0.15
+
+frozen_test:
+  dir: data/frozen_test
+  iou_threshold: 0.55  # gate for production
+  area_mape_threshold: 0.15
+
+# Go/no-go gate thresholds (Phase 1a)
+go_nogo:
+  go_iou: 0.45       # ≥ 0.45 → proceed to Phase 1b with light labeling
+  conditional_iou: 0.25  # [0.25, 0.45) → full synthetic + DA plan
+  # < 0.25 → NO-GO, revisit task framing
