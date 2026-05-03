@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routes import health, quote, feedback
+from app.routes import health, quote, feedback, metrics
 
 app = FastAPI(
     title="Roof Corrosion AI API",
@@ -22,3 +22,4 @@ app.add_middleware(
 app.include_router(health.router, tags=["health"])
 app.include_router(quote.router, prefix="/quote", tags=["quote"])
 app.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
+app.include_router(metrics.router, tags=["monitoring"])
