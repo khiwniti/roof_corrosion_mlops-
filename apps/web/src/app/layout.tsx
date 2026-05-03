@@ -1,4 +1,7 @@
-export const metadata = {
+import type { Metadata } from "next";
+import "./globals.css";
+
+export const metadata: Metadata = {
   title: "Roof Corrosion AI — Satellite Roof Analysis & Quoting",
   description:
     "Upload an address and get a satellite-derived corrosion analysis and repair/replacement quote for your roof.",
@@ -11,7 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body className="antialiased">{children}</body>
     </html>
   );
 }

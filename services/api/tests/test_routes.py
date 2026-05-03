@@ -55,13 +55,14 @@ async def test_submit_quote_with_coords(client):
 
 
 @pytest.mark.asyncio
-async def test_get_quote_status(client):
+async def test_get_quote_status_unknown_job(client):
+    """Unknown job ID returns 'unknown' status (no DB/Redis in test env)."""
     async with client as c:
-        response = await c.get("/quote/test-job-id")
+        response = await c.get("/quote/nonexistent-job-id")
     assert response.status_code == 200
     data = response.json()
-    assert data["job_id"] == "test-job-id"
-    assert data["status"] == "processing"
+    assert data["job_id"] == "nonexistent-job-id"
+    assert data["status"] == "unknown"
 
 
 @pytest.mark.asyncio
@@ -75,12 +76,25 @@ async def test_submit_feedback(client):
     data = response.json()
     assert data["status"] == "received"
     assert data["job_id"] == "test-job"
+    assert data["flagged_for_relabeling"] is True
 
 
 @pytest.mark.asyncio
-async def test_submit_quote_validation(client):
-    """Test that quote request without address or coords is still valid (both optional)."""
+async def test_submit_feedback_correct(client):
+    """Correct feedback should NOT flag for relabeling."""
+    async with client as c:
+        response = await c.post(
+            "/feedback/",
+            json={"job_id": "test-job-2", "correct": True},
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["flagged_for_relabeling"] is False
+
+
+@pytest.mark.asyncio
+async def test_submit_quote_requires_address_or_coords(client):
+    """Quote request without address AND without coords should return 400."""
     async with client as c:
         response = await c.post("/quote/", json={})
-    # Both fields are optional in the current schema, so this should pass
-    assert response.status_code == 200
+    assert response.status_code == 400
