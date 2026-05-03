@@ -3,15 +3,14 @@
 #
 # Prerequisites:
 #   - Docker installed and logged in (docker login)
-#   - RUNPOD_API_KEY set in .env
-#   - Docker image built and pushed to registry
+#   - RUNPOD_API_KEY set in .env or .env.local
 #
-# Usage:
-#   ./scripts/deploy-inference.sh [REGISTRY] [TAG]
+# Usage (run from REPO ROOT):
+#   ./scripts/deploy-inference.sh docker.io/YOUR_USER [TAG]
 #
 # Examples:
 #   ./scripts/deploy-inference.sh docker.io/myuser v1.0
-#   ./scripts/deploy-inference.sh  # defaults: docker.io/roofcorrosion, latest
+#   ./scripts/deploy-inference.sh docker.io/myuser   # tag defaults to latest
 
 set -euo pipefail
 
@@ -37,12 +36,20 @@ if [ -z "${RUNPOD_API_KEY:-}" ]; then
     exit 1
 fi
 
-# Build Docker image
+# Ensure we're at repo root (deploy script must be run from there)
+if [ ! -f "infra/runpod/serverless/inference/Dockerfile" ]; then
+    echo "ERROR: Run this script from the repo root, not from a subdirectory."
+    echo "  cd $(git rev-parse --show-toplevel) && ./scripts/deploy-inference.sh ..."
+    exit 1
+fi
+
+# Build Docker image — context is repo root so services/api/app/ is reachable
 echo ""
 echo "Building Docker image..."
 docker build --platform linux/amd64 \
+    -f infra/runpod/serverless/inference/Dockerfile \
     -t "${FULL_IMAGE}" \
-    infra/runpod/serverless/inference/
+    .
 
 # Push to registry
 echo ""
@@ -65,9 +72,10 @@ RESPONSE=$(curl -s -X POST "https://rest.runpod.io/v1/endpoints" \
         \"memoryInGb\": 16,
         \"containerDiskInGb\": 10,
         \"env\": [
-            {\"key\": \"MODELS_DIR\", \"value\": \"/app/models\"}
+            {\"key\": \"NVIDIA_API_KEY\", \"value\": \"${NVIDIA_API_KEY:-}\"},
+            {\"key\": \"REGION\", \"value\": \"${REGION:-TH}\"},
+            {\"key\": \"MIN_CONFIDENCE\", \"value\": \"0.6\"}
         ],
-        \"networkVolumeMountPath\": \"/app/models\",
         \"minActiveWorkers\": 0,
         \"maxActiveWorkers\": 3,
         \"idleTimeout\": 300,

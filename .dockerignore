@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Node
+node_modules
+apps/web/node_modules
+apps/web/.next
+packages/*/node_modules
+
+# Python caches
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+services/api/.venv
+ml/.venv
+
+# ML data (large, not needed in container)
+data/
+ml/data/
+ml/models/
+**/*.pt
+**/*.pth
+**/*.ckpt
+**/*.safetensors
+
+# Planning / docs
+.planning/
+.claude/
+.codeium/
+
+# Env files with secrets
+.env
+.env.local
+**/.env.local
+
+# macOS
+.DS_Store
