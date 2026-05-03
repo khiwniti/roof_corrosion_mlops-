@@ -1,10 +1,13 @@
-"""RunPod Serverless inference handler for roof corrosion detection.
+"""RunPod Serverless inference handler — Foundation Model pipeline.
 
-Two-stage pipeline: roof footprint (SegFormer-B3) → corrosion mask (SegFormer-B2).
-Models loaded from TorchScript files on network volume or baked into image.
+Zero-GPU corrosion detection using NVIDIA NIM VLM + OSM Building Footprints.
+No local models to load — all heavy inference runs via NVIDIA's API.
+
+Cold-start time: ~2s (Python + httpx imports only)
+Per-request cost: ~$0.01–0.05 (NIM VLM tokens, depending on image size)
 
 Deploy:
-    docker build -t roof-corrosion-inference .
+    docker build --platform linux/amd64 -t roof-corrosion-inference .
     docker push YOUR_REGISTRY/roof-corrosion-inference:latest
 
 Local test:
@@ -14,331 +17,291 @@ API request format:
     POST /runsync
     {
         "input": {
-            "image_url": "https://...",     # URL or base64-encoded image
-            "image_base64": "data:image/png;base64,...",  # alternative
-            "gsd": 0.3,                     # ground sample distance (m/pixel)
-            "address": "123 Main St",        # optional, for quote generation
-            "return_masks": false            # return mask arrays (default: false)
+            "image_url": "https://...",        # satellite tile URL
+            "image_base64": "data:image/png;base64,...",  # or base64
+            "lat": 13.7563,                    # WGS84 lat (enables OSM lookup)
+            "lng": 100.5018,                   # WGS84 lng
+            "gsd": 0.3,                        # ground sample distance m/pixel
+            "address": "123 Sukhumvit Rd",    # optional: NIM prompt context
+            "material": "corrugated_metal",    # optional: roof material
+            "region": "TH",                    # optional: pricing region
+            "return_masks": false              # include base64 mask PNGs in response
         }
     }
 """
 
+from __future__ import annotations
+
+import asyncio
 import base64
 import io
-import json
+import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import runpod
-import torch
-import torch.nn.functional as F
 from PIL import Image
 
+# ── Logging ─────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logger = logging.getLogger("handler")
 
-# ═══════════════════════════════════════════════════════════════
-# Model loading
-# ═══════════════════════════════════════════════════════════════
-
-MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/app/models"))
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Global model references (loaded once at cold start)
-roof_model = None
-corrosion_model = None
-model_versions = {"roof": "not_loaded", "corrosion": "not_loaded"}
-
-
-def load_models():
-    """Load TorchScript models from disk. Called once at worker startup."""
-    global roof_model, corrosion_model, model_versions
-
-    roof_path = MODELS_DIR / "stage1_roof_footprint.pt"
-    corrosion_path = MODELS_DIR / "stage2_corrosion.pt"
-
-    # Try TorchScript first, then HuggingFace fallback
-    if roof_path.exists():
-        roof_model = torch.jit.load(str(roof_path), map_location=DEVICE)
-        roof_model.eval()
-        model_versions["roof"] = f"torchscript:{roof_path.name}"
-        print(f"Loaded roof model from {roof_path}")
-    else:
-        print(f"No TorchScript roof model at {roof_path}, loading HuggingFace...")
-        try:
-            from transformers import SegformerForSemanticSegmentation
-            hf_id = "nvidia/segformer-b3-finetuned-ade-512-512"
-            base = SegformerForSemanticSegmentation.from_pretrained(
-                hf_id, num_labels=2, ignore_mismatched_sizes=True
-            )
-            roof_model = base.to(DEVICE)
-            roof_model.eval()
-            model_versions["roof"] = f"huggingface:{hf_id}"
-            print(f"Loaded roof model from HuggingFace: {hf_id}")
-        except Exception as e:
-            print(f"WARNING: Could not load roof model: {e}")
-            roof_model = None
-
-    if corrosion_path.exists():
-        corrosion_model = torch.jit.load(str(corrosion_path), map_location=DEVICE)
-        corrosion_model.eval()
-        model_versions["corrosion"] = f"torchscript:{corrosion_path.name}"
-        print(f"Loaded corrosion model from {corrosion_path}")
-    else:
-        print(f"No TorchScript corrosion model at {corrosion_path}, loading HuggingFace...")
-        try:
-            from transformers import SegformerForSemanticSegmentation
-            hf_id = "nvidia/segformer-b2-finetuned-ade-512-512"
-            base = SegformerForSemanticSegmentation.from_pretrained(
-                hf_id, num_labels=3, ignore_mismatched_sizes=True
-            )
-            corrosion_model = base.to(DEVICE)
-            corrosion_model.eval()
-            model_versions["corrosion"] = f"huggingface:{hf_id}"
-            print(f"Loaded corrosion model from HuggingFace: {hf_id}")
-        except Exception as e:
-            print(f"WARNING: Could not load corrosion model: {e}")
-            corrosion_model = None
-
-    print(f"Models loaded on {DEVICE}. Roof: {model_versions['roof']}, Corrosion: {model_versions['corrosion']}")
+# ── Import app package ───────────────────────────────────────────────────────
+# The Dockerfile copies services/api/app/ → /app/src/app/
+# and sets PYTHONPATH=/app/src so we can import from app.*
+try:
+    from app.inference.pipeline_fm import FoundationModelPipeline, FMPipelineConfig
+    from app.quote_engine import compute_quote
+    from app.region import get_active_region
+    _APP_AVAILABLE = True
+    logger.info("app package loaded OK")
+except ImportError as _e:
+    logger.warning(f"app package not importable ({_e}); running in stub mode")
+    _APP_AVAILABLE = False
 
 
-# ═══════════════════════════════════════════════════════════════
-# Image utilities
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# Image loading
+# ═══════════════════════════════════════════════════════════════════════════
 
-def load_image(image_input: str) -> np.ndarray:
-    """Load image from URL or base64 string.
+def load_image_from_url(url: str) -> np.ndarray:
+    """Download an image from a URL and return (H, W, 3) uint8 RGB array."""
+    import urllib.request
+    logger.info(f"Fetching image from URL: {url}")
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        data = resp.read()
+    return np.array(Image.open(io.BytesIO(data)).convert("RGB"))
 
-    Returns:
-        (H, W, 3) uint8 RGB numpy array
+
+def load_image_from_base64(b64: str) -> np.ndarray:
+    """Decode a base64 string (with or without data URI prefix)."""
+    if b64.startswith("data:image"):
+        b64 = b64.split(",", 1)[1]
+    data = base64.b64decode(b64)
+    return np.array(Image.open(io.BytesIO(data)).convert("RGB"))
+
+
+def mask_to_b64(mask: np.ndarray) -> str:
+    """Convert a bool mask to a base64-encoded PNG string."""
+    img = Image.fromarray((mask * 255).astype(np.uint8), mode="L")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Pipeline (module-level singleton — stays warm between requests)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_pipeline: Optional["FoundationModelPipeline"] = None
+
+
+def get_pipeline() -> "FoundationModelPipeline":
+    global _pipeline
+    if _pipeline is None:
+        if not _APP_AVAILABLE:
+            raise RuntimeError("app package unavailable — check container build")
+        config = FMPipelineConfig(
+            use_osm_footprint=True,
+            use_sam_fallback=True,
+            min_confidence=float(os.environ.get("MIN_CONFIDENCE", "0.6")),
+        )
+        _pipeline = FoundationModelPipeline(config=config)
+        logger.info("FoundationModelPipeline initialised (NIM + OSM)")
+    return _pipeline
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Validation helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _validate_input(inp: dict) -> str | None:
+    """Return an error message string if the input is invalid, else None."""
+    has_image = bool(inp.get("image_url") or inp.get("image_base64"))
+    has_coords = inp.get("lat") is not None and inp.get("lng") is not None
+    if not has_image and not has_coords:
+        return "Provide at least one of: image_url, image_base64, or lat+lng"
+    gsd = inp.get("gsd", 0.3)
+    if not (0.05 <= float(gsd) <= 10.0):
+        return f"gsd must be between 0.05 and 10.0 m/pixel, got {gsd}"
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tile fetching when only lat/lng is provided
+# ═══════════════════════════════════════════════════════════════════════════
+
+async def _fetch_tile_for_coords(lat: float, lng: float) -> tuple[np.ndarray, float, tuple]:
+    """Fetch an Esri World Imagery tile for the given coordinates.
+
+    Returns (tile_array, gsd_m, tile_bounds).
+    Falls back to a blank gray tile if the fetch fails.
     """
-    if image_input.startswith("http://") or image_input.startswith("https://"):
-        import urllib.request
-        resp = urllib.request.urlopen(image_input, timeout=30)
-        img_bytes = resp.read()
-        return np.array(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
-
-    # Base64
-    if image_input.startswith("data:image"):
-        # Strip data URI prefix
-        b64_data = image_input.split(",", 1)[1]
-    else:
-        b64_data = image_input
-
-    img_bytes = base64.b64decode(b64_data)
-    return np.array(Image.open(io.BytesIO(img_bytes)).convert("RGB"))
+    try:
+        from app.inference.tile_fetch import TileFetcher
+        fetcher = TileFetcher()
+        job = {"lat": lat, "lng": lng, "source": None}
+        # fetch_tiles_for_job is defined in worker, but we can call TileFetcher directly
+        tile, gsd, bounds = await fetcher.fetch(lat=lat, lng=lng, zoom=19)
+        return tile, gsd, bounds
+    except Exception as e:
+        logger.warning(f"Tile fetch failed ({e}), using blank 256×256 tile")
+        blank = np.full((256, 256, 3), 128, dtype=np.uint8)
+        return blank, 0.30, (lat - 0.001, lng - 0.001, lat + 0.001, lng + 0.001)
 
 
-def preprocess(tile_image: np.ndarray) -> torch.Tensor:
-    """Convert (H, W, 3) uint8 to (1, 3, H, W) normalized tensor."""
-    from torchvision import transforms
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    pil = Image.fromarray(tile_image)
-    return transform(pil).unsqueeze(0).to(DEVICE)
+# ═══════════════════════════════════════════════════════════════════════════
+# Main async handler
+# ═══════════════════════════════════════════════════════════════════════════
 
-
-# ═══════════════════════════════════════════════════════════════
-# Inference pipeline
-# ═══════════════════════════════════════════════════════════════
-
-SEVERITY_THRESHOLDS = {
-    "none": 0.0,
-    "light": 5.0,
-    "moderate": 25.0,
-    "severe": 50.0,
-}
-
-
-def classify_severity(corrosion_percent: float) -> str:
-    for severity, threshold in reversed(SEVERITY_THRESHOLDS.items()):
-        if corrosion_percent >= threshold:
-            return severity
-    return "none"
-
-
-def predict_roof(img_tensor: torch.Tensor, original_shape: tuple) -> np.ndarray:
-    """Stage 1: Predict roof footprint mask."""
-    if roof_model is None:
-        return np.ones(original_shape, dtype=bool)  # fallback: assume whole image is roof
-
-    with torch.no_grad():
-        if hasattr(roof_model, 'predict_mask'):
-            # SegFormer wrapper
-            pred = roof_model.predict_mask(img_tensor)  # (1, H, W)
-        else:
-            # TorchScript or raw model
-            output = roof_model(img_tensor)
-            if isinstance(output, dict):
-                logits = output.get("logits", output.get("out", None))
-            else:
-                logits = output
-
-            if logits.shape[-2:] != img_tensor.shape[-2:]:
-                logits = F.interpolate(logits, size=img_tensor.shape[-2:], mode="bilinear", align_corners=False)
-            pred = logits.argmax(dim=1)  # (1, H, W)
-
-    mask = pred.cpu().numpy()[0]  # (H, W)
-    return (mask > 0).astype(bool)
-
-
-def predict_corrosion(img_tensor: torch.Tensor, roof_mask: np.ndarray, original_shape: tuple) -> np.ndarray:
-    """Stage 2: Predict corrosion mask within roof area."""
-    if corrosion_model is None:
-        return np.zeros(original_shape, dtype=bool)
-
-    with torch.no_grad():
-        if hasattr(corrosion_model, 'predict_mask'):
-            pred = corrosion_model.predict_mask(img_tensor)
-        else:
-            output = corrosion_model(img_tensor)
-            if isinstance(output, dict):
-                logits = output.get("logits", output.get("out", None))
-            else:
-                logits = output
-
-            if logits.shape[-2:] != img_tensor.shape[-2:]:
-                logits = F.interpolate(logits, size=img_tensor.shape[-2:], mode="bilinear", align_corners=False)
-            pred = logits.argmax(dim=1)
-
-    mask = pred.cpu().numpy()[0]
-    corrosion = (mask == 2).astype(bool)  # class 2 = corrosion
-    return corrosion & roof_mask  # only within roof
-
-
-def compute_confidence(img_tensor: torch.Tensor, corrosion_mask: np.ndarray) -> float:
-    """Compute model confidence score.
-
-    For now: ratio of high-confidence corrosion pixels.
-    Production: MC-dropout uncertainty estimation.
-    """
-    if corrosion_model is None:
-        return 0.5
-
-    with torch.no_grad():
-        output = corrosion_model(img_tensor)
-        if isinstance(output, dict):
-            logits = output.get("logits", output.get("out", None))
-        else:
-            logits = output
-
-        if logits.shape[-2:] != img_tensor.shape[-2:]:
-            logits = F.interpolate(logits, size=img_tensor.shape[-2:], mode="bilinear", align_corners=False)
-
-        probs = F.softmax(logits, dim=1)
-        corrosion_probs = probs[0, 2].cpu().numpy()  # (H, W)
-
-    # Confidence = mean probability on predicted corrosion pixels
-    if corrosion_mask.sum() > 0:
-        mean_prob = corrosion_probs[corrosion_mask].mean()
-    else:
-        mean_prob = 1.0 - corrosion_probs.max()  # confidence in "no corrosion"
-
-    return float(np.clip(mean_prob, 0.0, 1.0))
-
-
-# ═══════════════════════════════════════════════════════════════
-# Handler
-# ═══════════════════════════════════════════════════════════════
-
-def handler(job: dict) -> dict:
-    """RunPod Serverless handler for roof corrosion inference.
-
-    Args:
-        job: {"id": "...", "input": {"image_url": "...", "gsd": 0.3, ...}}
-
-    Returns:
-        {
-            "roof_area_m2": float,
-            "corroded_area_m2": float,
-            "corrosion_percent": float,
-            "severity": str,
-            "confidence": float,
-            "roof_mask_b64": str | None,  # base64 PNG if return_masks=true
-            "corrosion_mask_b64": str | None,
-            "model_versions": dict,
-            "inference_time_ms": float,
-        }
-    """
-    job_input = job.get("input", {})
-    job_id = job.get("id", "unknown")
-
-    # Extract image
-    image_url = job_input.get("image_url", "")
-    image_base64 = job_input.get("image_base64", "")
-    gsd = job_input.get("gsd", 0.3)
-    return_masks = job_input.get("return_masks", False)
-
-    if not image_url and not image_base64:
-        return {"error": "Must provide 'image_url' or 'image_base64'"}
-
+async def _run(job: dict) -> dict:
+    """Core async logic — separated so we can call it from sync handler."""
+    inp = job.get("input", {})
     t0 = time.time()
 
+    # ── 0. Validate ──────────────────────────────────────────────────────────
+    err = _validate_input(inp)
+    if err:
+        return {"error": err, "status": "failed"}
+
+    # ── 1. Load satellite image ───────────────────────────────────────────────
+    lat: Optional[float] = inp.get("lat")
+    lng: Optional[float] = inp.get("lng")
+    gsd: float = float(inp.get("gsd", 0.30))
+    tile_bounds: Optional[tuple] = None
+
+    if inp.get("image_url"):
+        try:
+            tile_image = load_image_from_url(inp["image_url"])
+        except Exception as e:
+            return {"error": f"Failed to fetch image_url: {e}", "status": "failed"}
+
+    elif inp.get("image_base64"):
+        try:
+            tile_image = load_image_from_base64(inp["image_base64"])
+        except Exception as e:
+            return {"error": f"Failed to decode image_base64: {e}", "status": "failed"}
+
+    else:
+        # No image provided — fetch a satellite tile for the coordinates
+        tile_image, gsd, tile_bounds = await _fetch_tile_for_coords(lat, lng)
+
+    logger.info(f"Tile loaded: shape={tile_image.shape} gsd={gsd:.3f}m/px")
+
+    # ── 2. Run FM pipeline ────────────────────────────────────────────────────
     try:
-        # Load image
-        image_input = image_url or image_base64
-        tile_image = load_image(image_input)
-        h, w = tile_image.shape[:2]
+        pipeline = get_pipeline()
+    except RuntimeError as e:
+        return {"error": str(e), "status": "failed"}
 
-        # Preprocess
-        img_tensor = preprocess(tile_image)
+    try:
+        result = await pipeline.analyze(
+            tile_image=tile_image,
+            lat=lat,
+            lng=lng,
+            gsd=gsd,
+            address=inp.get("address", ""),
+            tile_bounds=tile_bounds,
+        )
+    except Exception as e:
+        logger.exception("FM pipeline failed")
+        return {"error": f"Inference failed: {e}", "status": "failed"}
 
-        # Stage 1: Roof footprint
-        roof_mask = predict_roof(img_tensor, (h, w))
+    # ── 3. Compute quote ──────────────────────────────────────────────────────
+    region_code = inp.get("region", os.environ.get("REGION", "TH"))
+    material = inp.get("material", "corrugated_metal")
+    try:
+        os.environ["REGION"] = region_code  # region.get_active_region() reads env
+        quote = compute_quote(
+            roof_area_m2=result.roof_area_m2,
+            corroded_area_m2=result.corroded_area_m2,
+            corrosion_percent=result.corrosion_percent,
+            severity=result.severity,
+            confidence=result.confidence,
+            material=material,
+            region=region_code,
+        )
+    except Exception as e:
+        logger.warning(f"Quote computation failed ({e}); returning assessment only")
+        quote = None
 
-        # Stage 2: Corrosion
-        corrosion_mask = predict_corrosion(img_tensor, roof_mask, (h, w))
+    # ── 4. Build response ─────────────────────────────────────────────────────
+    processing_ms = int((time.time() - t0) * 1000)
 
-        # Compute areas
-        roof_pixels = roof_mask.sum()
-        corrosion_pixels = corrosion_mask.sum()
-        roof_area_m2 = roof_pixels * gsd * gsd
-        corroded_area_m2 = corrosion_pixels * gsd * gsd
-        corrosion_percent = (corroded_area_m2 / roof_area_m2 * 100) if roof_area_m2 > 0 else 0.0
+    response: dict = {
+        "status": "completed",
+        "processing_ms": processing_ms,
+        "assessment": {
+            "roof_area_m2": round(result.roof_area_m2, 2),
+            "corroded_area_m2": round(result.corroded_area_m2, 2),
+            "corrosion_percent": round(result.corrosion_percent, 1),
+            "severity": result.severity,
+            "confidence": round(result.confidence, 3),
+            "roof_material": getattr(result, "roof_material", "unknown"),
+            "description": getattr(result, "description", ""),
+        },
+        "model_versions": {
+            "roof": result.roof_model_version,
+            "corrosion": result.corrosion_model_version,
+        },
+        "gsd_m": gsd,
+    }
 
-        severity = classify_severity(corrosion_percent)
-        confidence = compute_confidence(img_tensor, corrosion_mask)
-
-        elapsed_ms = (time.time() - t0) * 1000
-
-        result = {
-            "roof_area_m2": round(roof_area_m2, 2),
-            "corroded_area_m2": round(corroded_area_m2, 2),
-            "corrosion_percent": round(corrosion_percent, 1),
-            "severity": severity,
-            "confidence": round(confidence, 3),
-            "model_versions": model_versions,
-            "inference_time_ms": round(elapsed_ms, 1),
+    if quote is not None:
+        response["quote"] = {
+            "currency": quote.currency,
+            "total_amount": quote.total_amount,
+            "line_items": quote.line_items,
+            "requires_human_review": quote.requires_human_review,
+            "review_reason": quote.review_reason,
         }
 
-        # Optionally include masks as base64 PNG
-        if return_masks:
-            roof_png = Image.fromarray((roof_mask * 255).astype(np.uint8))
-            corr_png = Image.fromarray((corrosion_mask * 255).astype(np.uint8))
-            buf_roof = io.BytesIO()
-            buf_corr = io.BytesIO()
-            roof_png.save(buf_roof, format="PNG")
-            corr_png.save(buf_corr, format="PNG")
-            result["roof_mask_b64"] = base64.b64encode(buf_roof.getvalue()).decode()
-            result["corrosion_mask_b64"] = base64.b64encode(buf_corr.getvalue()).decode()
+    # Optional: include base64-encoded mask PNGs
+    if inp.get("return_masks", False):
+        response["masks"] = {
+            "roof_png_b64": mask_to_b64(result.roof_mask),
+            "corrosion_png_b64": mask_to_b64(result.corrosion_mask),
+        }
 
-        print(f"Job {job_id}: severity={severity}, corrosion={corrosion_percent:.1f}%, confidence={confidence:.3f}, time={elapsed_ms:.0f}ms")
-        return result
+    logger.info(
+        f"Done: severity={result.severity} corrosion={result.corrosion_percent:.1f}% "
+        f"area={result.roof_area_m2:.0f}m² time={processing_ms}ms"
+    )
+    return response
 
+
+def handler(job: dict) -> dict:
+    """RunPod Serverless entry point (sync wrapper around async core)."""
+    try:
+        return asyncio.run(_run(job))
     except Exception as e:
-        print(f"Job {job_id} FAILED: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"error": str(e)}
+        logger.exception("Unhandled error in handler")
+        return {"error": str(e), "status": "failed"}
 
 
-# ═══════════════════════════════════════════════════════════════
-# Startup
-# ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════
+# Local test entry point
+# ═══════════════════════════════════════════════════════════════════════════
 
-load_models()
-runpod.serverless.start({"handler": handler})
+if __name__ == "__main__":
+    import json
+
+    test_input_path = Path(__file__).parent / "test_input.json"
+    if "--test_input" in sys.argv:
+        idx = sys.argv.index("--test_input")
+        test_input_path = Path(sys.argv[idx + 1])
+
+    with open(test_input_path) as f:
+        job = json.load(f)
+
+    print("Running local test with:", json.dumps(job, indent=2))
+    result = handler(job)
+    print("\nResult:", json.dumps(result, indent=2, default=str))

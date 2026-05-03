@@ -1,7 +1,11 @@
 {
     "input": {
-        "image_url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/1200px-Cat03.jpg",
-        "gsd": 0.3,
-        "return_masks": true
+        "lat": 13.7563,
+        "lng": 100.5018,
+        "gsd": 0.30,
+        "address": "Silom Rd, Bang Rak, Bangkok 10500, Thailand",
+        "material": "corrugated_metal",
+        "region": "TH",
+        "return_masks": false
     }
 }

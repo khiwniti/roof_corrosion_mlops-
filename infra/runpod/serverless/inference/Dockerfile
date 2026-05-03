@@ -1,5 +1,7 @@
-# RunPod Serverless Inference Worker
-# Two-stage roof corrosion detection: SegFormer-B3 → SegFormer-B2
+# RunPod Serverless Inference Worker — Foundation Model Edition
+#
+# Uses NVIDIA NIM VLM + OSM Building Footprints. No local GPU model.
+# Cold-start: ~3s  |  Image size: ~400 MB  |  GPU: optional (SAM 2 fallback)
 #
 # Build:
 #   docker build --platform linux/amd64 -t roof-corrosion-inference .
@@ -10,31 +12,40 @@
 # Deploy:
 #   See scripts/deploy-inference.sh
 
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+FROM python:3.11-slim
 
 WORKDIR /app
 
 # System deps for image I/O
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx libglib2.0-0 libjpeg-dev libpng-dev && \
+    libgl1-mesa-glx libglib2.0-0 libjpeg-dev libpng-dev curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Python deps — installed first for layer caching
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy handler
+# Copy the FastAPI app package so handler.py can import from app.*
+# This gives us pipeline_fm, nim_client, footprint_client, region, quote_engine, etc.
+COPY ../../../../services/api/app/ ./src/app/
+
+# Copy handler and test fixture
 COPY handler.py ./
+COPY test_input.json ./
 
-# Model directory — mount network volume here for model caching
-# If models are baked into the image, COPY them into /app/models/
-# Otherwise they'll be downloaded from HuggingFace on first cold start
-ENV MODELS_DIR=/app/models
-RUN mkdir -p /app/models
+# Ensure app package is importable
+ENV PYTHONPATH=/app/src
+ENV PYTHONUNBUFFERED=1
 
-# Optional: bake TorchScript models into the image for faster cold starts
-# COPY models/stage1_roof_footprint.pt /app/models/
-# COPY models/stage2_corrosion.pt /app/models/
+# RunPod-required env (override at deploy time)
+ENV NVIDIA_API_KEY=""
+ENV REGION=TH
+ENV PIPELINE=fm
+ENV MIN_CONFIDENCE=0.6
+
+# Healthcheck — RunPod polls this
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python3 -c "import app.inference.pipeline_fm; print('ok')" || exit 1
 
 # RunPod serverless entrypoint
 CMD ["python3", "-u", "handler.py"]
