@@ -117,6 +117,15 @@ class CorrosionPipeline:
             device=dev,
         )
 
+    @classmethod
+    def from_runpod_serverless(cls) -> "RunPodCorrosionPipeline":
+        """Create a pipeline that delegates inference to RunPod Serverless GPU.
+
+        No local GPU needed — all model inference runs on RunPod.
+        Returns a RunPodCorrosionPipeline (subclass) with async analyze().
+        """
+        return RunPodCorrosionPipeline()
+
     @staticmethod
     def _load_model(model_name: str, stage: str, device: str) -> tuple:
         """Load a model from MLflow registry with fallback to HuggingFace."""
@@ -313,3 +322,93 @@ class CorrosionPipeline:
             pass
 
         return 0.5
+
+
+class RunPodCorrosionPipeline:
+    """Pipeline that delegates all GPU inference to RunPod Serverless.
+
+    No local GPU or model files needed. The FastAPI orchestrator just
+    calls the RunPod endpoint and returns the result.
+
+    Usage:
+        pipeline = CorrosionPipeline.from_runpod_serverless()
+        result = await pipeline.analyze_async(tile_image, gsd=0.3)
+    """
+
+    def __init__(self):
+        from app.inference.runpod_client import RunPodClient
+        self._client = RunPodClient()
+        self.roof_model_uri = "runpod/serverless"
+        self.corrosion_model_uri = "runpod/serverless"
+
+    async def analyze_async(
+        self,
+        tile_image: np.ndarray,
+        gsd: float = 0.3,
+        address: str = "",
+    ) -> CorrosionResult:
+        """Run two-stage analysis via RunPod Serverless GPU.
+
+        Args:
+            tile_image: (H, W, 3) uint8 RGB image
+            gsd: ground sample distance in meters/pixel
+            address: optional address for quote context
+
+        Returns:
+            CorrosionResult with all metrics
+        """
+        result = await self._client.analyze(
+            image_array=tile_image,
+            gsd=gsd,
+            return_masks=True,
+        )
+
+        if "error" in result:
+            raise RuntimeError(f"RunPod inference failed: {result['error']}")
+
+        # Decode masks from base64
+        import base64
+        import io as _io
+        from PIL import Image as _Image
+
+        roof_mask = np.zeros(tile_image.shape[:2], dtype=bool)
+        corrosion_mask = np.zeros(tile_image.shape[:2], dtype=bool)
+
+        if result.get("roof_mask_b64"):
+            roof_png = base64.b64decode(result["roof_mask_b64"])
+            roof_arr = np.array(_Image.open(_io.BytesIO(roof_png)))
+            roof_mask = roof_arr > 128
+
+        if result.get("corrosion_mask_b64"):
+            corr_png = base64.b64decode(result["corrosion_mask_b64"])
+            corr_arr = np.array(_Image.open(_io.BytesIO(corr_png)))
+            corrosion_mask = corr_arr > 128
+
+        return CorrosionResult(
+            roof_area_m2=result.get("roof_area_m2", 0.0),
+            corroded_area_m2=result.get("corroded_area_m2", 0.0),
+            corrosion_percent=result.get("corrosion_percent", 0.0),
+            severity=result.get("severity", "none"),
+            confidence=result.get("confidence", 0.5),
+            roof_mask=roof_mask,
+            corrosion_mask=corrosion_mask,
+            gsd=gsd,
+            roof_model_version=result.get("model_versions", {}).get("roof", "unknown"),
+            corrosion_model_version=result.get("model_versions", {}).get("corrosion", "unknown"),
+        )
+
+    def analyze(self, tile_image: np.ndarray, gsd: float = 0.3) -> CorrosionResult:
+        """Synchronous wrapper for analyze_async."""
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # We're inside an async context — create a task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, self.analyze_async(tile_image, gsd)).result()
+        else:
+            return asyncio.run(self.analyze_async(tile_image, gsd))

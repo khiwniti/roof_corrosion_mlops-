@@ -47,11 +47,45 @@ def load_models(
     roof_model_uri: Optional[str] = None,
     corrosion_model_uri: Optional[str] = None,
     device: str = "auto",
-) -> CorrosionPipeline:
-    """Load the two-stage inference pipeline from MLflow registry.
+):
+    """Load the inference pipeline.
 
-    Falls back to CPU stubs if MLflow/models not available.
+    Priority order (set via env):
+    1. PIPELINE=fm (DEFAULT) + NVIDIA_API_KEY → Foundation-model pipeline (OSM + NIM VLM)
+    2. PIPELINE=runpod  + RUNPOD_ENDPOINT_ID → trained models on RunPod Serverless
+    3. PIPELINE=local   → load TorchScript/MLflow models locally
+    4. Fallback → stub pipeline (returns zeros, no real inference)
+
+    Returns CorrosionPipeline | RunPodCorrosionPipeline | FoundationModelPipeline
     """
+    import os
+
+    pipeline_mode = os.environ.get("PIPELINE", "fm").lower()
+
+    # Option 1: Foundation-model pipeline (default, cheapest, zero training)
+    if pipeline_mode == "fm":
+        try:
+            from app.inference.pipeline_fm import create_fm_pipeline
+            pipeline = create_fm_pipeline()
+            print(f"Using Foundation-Model pipeline: OSM + NIM "
+                  f"({pipeline.corrosion_model_uri})")
+            return pipeline
+        except Exception as e:
+            print(f"⚠️  Foundation-model pipeline init failed: {e}")
+            print("   Falling back to RunPod / local pipeline...")
+
+    # Option 2: RunPod Serverless (trained SegFormer on GPU)
+    runpod_endpoint = os.environ.get("RUNPOD_ENDPOINT_ID", "")
+    runpod_key = os.environ.get("RUNPOD_API_KEY", "")
+    if pipeline_mode in ("fm", "runpod") and runpod_endpoint and runpod_key:
+        try:
+            pipeline = CorrosionPipeline.from_runpod_serverless()
+            print(f"Using RunPod Serverless endpoint: {runpod_endpoint}")
+            return pipeline
+        except Exception as e:
+            print(f"⚠️  RunPod Serverless init failed: {e}")
+            print("   Falling back to local pipeline...")
+
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -136,7 +170,7 @@ async def geocode_address(address: str) -> tuple[float, float]:
 
 # ── Main worker loop ─────────────────────────────────────────
 
-def process_job(job: dict, pipeline: CorrosionPipeline) -> dict:
+def process_job(job: dict, pipeline) -> dict:
     """Process a single inference job synchronously.
 
     Steps:
@@ -170,8 +204,25 @@ def process_job(job: dict, pipeline: CorrosionPipeline) -> dict:
 
         update_job_in_supabase(job_id, {"gsd_m": gsd})
 
-        # 3. Run two-stage inference
-        result = pipeline.analyze(tile_array, gsd=gsd)
+        # 3. Run inference — dispatch based on pipeline type
+        from app.inference.pipeline_fm import FoundationModelPipeline
+        from app.inference.pipeline import RunPodCorrosionPipeline
+
+        if isinstance(pipeline, FoundationModelPipeline):
+            # FM pipeline is async — takes address + coords for OSM + VLM context
+            result = asyncio.run(pipeline.analyze(
+                tile_image=tile_array,
+                lat=job.get("lat"),
+                lng=job.get("lng"),
+                gsd=gsd,
+                address=job.get("address", ""),
+                tile_bounds=job.get("tile_bounds"),
+            ))
+        elif isinstance(pipeline, RunPodCorrosionPipeline):
+            result = asyncio.run(pipeline.analyze_async(tile_array, gsd=gsd))
+        else:
+            # Legacy sync pipeline
+            result = pipeline.analyze(tile_array, gsd=gsd)
 
         # 4. Compute quote
         quote_result = compute_quote(

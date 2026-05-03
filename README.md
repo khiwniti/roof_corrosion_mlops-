@@ -4,23 +4,36 @@ Production MLOps system that turns a customer's address into a roof-replacement/
 
 ## Architecture
 
+Two pipelines coexist; select via `PIPELINE=fm|runpod|local` env var.
+
+### Default: Foundation-model pipeline (zero training)
 ```
-Vercel (Next.js 14)          RunPod (FastAPI + GPU inference)
-┌──────────────────┐         ┌─────────────────────────────┐
-│ / (marketing)    │         │ FastAPI gateway             │
-│ /portal (quote)  │──JWT──▶ │  ├─ /quote  → Redis queue   │
-│ /ops (dashboard) │         │  ├─ /feedback → relabel     │
-└───────┬──────────┘         │  └─ /metrics (Prometheus)   │
-        │                    │                              │
-   Supabase Auth+DB          │  Inference Worker (A10/A100) │
-   (customers, jobs,         │  ├─ Stage 1: Mask2Former    │
-    quotes, feedback)        │  └─ Stage 2: SegFormer      │
-                             └─────────────────────────────┘
-                                      │
-                             MLOps Control Plane
-                             (MLflow, DVC, Prefect,
-                              Label Studio, Evidently)
+Vercel (Next.js 14)       Local/Cloud (FastAPI)         Foundation Models
+┌──────────────────┐      ┌─────────────────────┐       ┌────────────────────┐
+│ / (marketing)    │      │ FastAPI gateway      │      │ OSM Overpass       │
+│ /portal (quote)  │─JWT─▶│  ├─ /quote → queue   │───▶  │  (roof polygons)   │
+│ /ops (dashboard) │      │  ├─ /feedback        │      │                    │
+└───────┬──────────┘      │  └─ /metrics         │      │ NVIDIA NIM VLM     │
+        │                  └─────────────────────┘      │  Llama 3.2 90B V   │
+   Supabase Auth+DB                │                    │  (corrosion + JSON)│
+   (customers, jobs,          Redis queue               │                    │
+    quotes, feedback)          (job state)              │ SAM 2 (fallback)   │
+                                                         └────────────────────┘
 ```
+
+### Alternative: Trained SegFormer pipeline (production hardening)
+```
+FastAPI gateway ──▶ RunPod Serverless (A10 GPU, pay-per-request)
+                      ├─ SegFormer-B3 (roof footprint)
+                      └─ SegFormer-B2 (corrosion mask + confidence)
+                   RunPod Serverless (A100, on-demand training)
+```
+
+**Why the FM pipeline is the default:**
+- Zero training, zero labeled data needed → ships immediately
+- NIM VLM already understands "rust", "corrosion", "metal degradation"
+- Cost: ~$0.01-0.05/quote — negligible vs quote value
+- Trained pipeline stays available as shadow-deploy comparison & fallback
 
 ## Quick Start
 
@@ -28,7 +41,8 @@ Vercel (Next.js 14)          RunPod (FastAPI + GPU inference)
 - Python 3.11+
 - Node.js 20+ / pnpm 9+
 - Docker + Docker Compose (for local MLOps stack)
-- GPU (for training; inference works on CPU but slowly)
+- RunPod account + API key (for GPU inference — no local GPU needed)
+- GPU (optional, for local training; RunPod Serverless handles this)
 
 ### 1. Install dependencies
 
@@ -52,7 +66,40 @@ make data-download
 
 Requires free accounts on DrivenData (Caribbean), GitHub (AIRS), and AWS (SpaceNet). See `DATA_LICENSES.md` for license details.
 
-### 4. Train baseline models (Phase 1a)
+### 4. Use the Foundation-Model Pipeline (default — no training needed)
+
+```bash
+# 1. Get free NVIDIA API key at https://build.nvidia.com (1,000 credits)
+echo "NVIDIA_API_KEY=nvapi-..." >> .env.local
+echo "PIPELINE=fm" >> .env.local
+
+# 2. Start the API — FM pipeline auto-loads
+make dev-api
+
+# 3. Test with a real address
+curl -X POST http://localhost:8000/quote \
+  -H "Content-Type: application/json" \
+  -d '{"address": "350 5th Ave, New York, NY 10118"}'
+```
+
+The FM pipeline uses OSM for roof polygons and NVIDIA NIM (Llama 3.2 90B Vision) for corrosion assessment. No GPU, no training, no labeled data required.
+
+### 4b. (Optional) Train baseline models for comparison / hardening
+
+If you want deterministic, on-prem, or domain-adapted models, also train the SegFormer pipeline:
+
+**Option A: RunPod Serverless (recommended — no local GPU needed)**
+
+```bash
+# 1. Deploy training endpoint (one-time)
+./scripts/deploy-training.sh
+
+# 2. Trigger training
+./scripts/run-training.sh 1   # Stage 1: roof footprint
+./scripts/run-training.sh 2   # Stage 2: corrosion (go/no-go gate)
+```
+
+**Option B: Local training (requires GPU)**
 
 ```bash
 make train-stage2    # Stage 2 (corrosion) — the go/no-go gate
@@ -61,7 +108,19 @@ make train-stage1    # Stage 1 (roof footprint)
 
 **Go/no-go gate**: If corrosion IoU ≥ 0.45 on the frozen real test set → proceed to paid data. If < 0.25 → revisit task framing.
 
-### 5. Run the API + worker
+### 5. Deploy RunPod Serverless inference (recommended)
+
+```bash
+# Deploy inference endpoint (one-time)
+./scripts/deploy-inference.sh
+
+# Add endpoint ID to .env.local
+echo "RUNPOD_ENDPOINT_ID=<from-deploy-output>" >> .env.local
+```
+
+The FastAPI worker automatically uses RunPod Serverless when `RUNPOD_ENDPOINT_ID` is set. No local GPU needed.
+
+### 6. Run the API + worker
 
 ```bash
 # Terminal 1: API
@@ -109,7 +168,15 @@ python infra/supabase/seed.py
 │       └── baseline_flow.py     # Prefect orchestration
 ├── infra/
 │   ├── supabase/migrations/     # SQL schema (7 tables + RLS)
-│   ├── runpod/                  # Pod configs (API, training, MLOps)
+│   ├── runpod/
+│   │   ├── serverless/
+│   │   │   ├── inference/       # RunPod Serverless inference worker
+│   │   │   │   ├── handler.py   # Two-stage pipeline handler
+│   │   │   │   └── Dockerfile   # GPU inference image
+│   │   │   └── training/        # RunPod Serverless training worker
+│   │   │       ├── handler.py   # Training + export handler
+│   │   │       └── Dockerfile   # GPU training image
+│   │   └── *.yaml               # Legacy pod configs
 │   └── prometheus/              # Prometheus config
 ├── docker-compose.yml           # Local MLOps stack
 ├── DATA_LICENSES.md             # Dataset license tracking

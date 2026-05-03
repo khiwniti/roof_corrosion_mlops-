@@ -38,6 +38,13 @@ wandb/
 # Data (never commit raw data)
 data/raw/
 data/processed/
+data/spacenet/
+data/synthetic/
+data/airs/
+data/caribbean/
+data/xbd/
+data/landcover/
+models/
 !data/.gitkeep
 
 # Environment
