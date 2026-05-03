@@ -1,0 +1,53 @@
+{
+  "title": "Roof Corrosion Inference (Thailand)",
+  "description": "Satellite-based roof corrosion detection with foundation models (NVIDIA NIM VLM + OSM). Returns corrosion assessment and THB repair quotes.",
+  "type": "serverless",
+  "category": "image",
+  "iconUrl": "https://raw.githubusercontent.com/khiwniti/roof_corrosion_mlops-/main/assets/icon.png",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 10,
+    "gpuTypeIds": [
+      "NVIDIA RTX A4000",
+      "NVIDIA RTX A2000",
+      "Tesla T4"
+    ],
+    "workersMin": 0,
+    "workersMax": 2,
+    "idleTimeout": 300,
+    "flashboot": true,
+    "imageName": "docker.io/khiwnitigetintheq/roof-corrosion-inference:latest",
+    "env": [
+      {
+        "key": "REGION",
+        "value": "TH"
+      },
+      {
+        "key": "PIPELINE",
+        "value": "fm"
+      },
+      {
+        "key": "PYTHONPATH",
+        "value": "/app/src"
+      },
+      {
+        "key": "PYTHONUNBUFFERED",
+        "value": "1"
+      },
+      {
+        "key": "MIN_CONFIDENCE",
+        "value": "0.6"
+      },
+      {
+        "key": "NVIDIA_API_KEY",
+        "input": {
+          "name": "NVIDIA API Key",
+          "type": "string",
+          "description": "Your NVIDIA NIM API key from build.nvidia.com",
+          "default": "",
+          "required": false
+        }
+      }
+    ]
+  }
+}
