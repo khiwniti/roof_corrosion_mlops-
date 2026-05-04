@@ -46,7 +46,7 @@ LABEL org.opencontainers.image.source="https://github.com/khiwniti/roof_corrosio
 COPY --from=ghcr.io/astral-sh/uv:0.4.9 /uv /usr/local/bin/uv
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 libjpeg-dev libpng-dev curl dumb-init && \
+    libgl1 libglib2.0-0 libjpeg-dev libpng-dev curl && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy venv from builder
@@ -79,8 +79,5 @@ ENV LOG_LEVEL=INFO
 # Switch to non-root user
 USER appuser
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=5s \
-  CMD python3 -c "import app.inference.pipeline_fm; print('ok')" || exit 1
 
-ENTRYPOINT ["dumb-init", "--"]
 CMD ["python3", "-u", "handler.py"]

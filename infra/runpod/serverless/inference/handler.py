@@ -278,30 +278,29 @@ async def _run(job: dict) -> dict:
     return response
 
 
-def handler(job: dict) -> dict:
-    """RunPod Serverless entry point (sync wrapper around async core)."""
+async def handler(job: dict) -> dict:
+    """RunPod Serverless entry point (async — RunPod runs inside an event loop)."""
     try:
-        return asyncio.run(_run(job))
+        return await _run(job)
     except Exception as e:
         logger.exception("Unhandled error in handler")
         return {"error": str(e), "status": "failed"}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Local test entry point
+# Entry Point
 # ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    import json
-
-    test_input_path = Path(__file__).parent / "test_input.json"
     if "--test_input" in sys.argv:
+        import json
         idx = sys.argv.index("--test_input")
         test_input_path = Path(sys.argv[idx + 1])
-
-    with open(test_input_path) as f:
-        job = json.load(f)
-
-    print("Running local test with:", json.dumps(job, indent=2))
-    result = handler(job)
-    print("\nResult:", json.dumps(result, indent=2, default=str))
+        with open(test_input_path) as f:
+            job = json.load(f)
+        print("Running local test with:", json.dumps(job, indent=2))
+        result = handler(job)
+        print("\nResult:", json.dumps(result, indent=2, default=str))
+    else:
+        # Production: start RunPod serverless worker loop (blocking)
+        runpod.serverless.start({"handler": handler})

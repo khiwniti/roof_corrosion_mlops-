@@ -1,10 +1,12 @@
-"""Quote submission and retrieval endpoints — wired to Supabase + Redis."""
+"""Quote submission and retrieval endpoints -- wired to Supabase + Redis."""
 
 import logging
+import os
 import time
 import uuid
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -13,7 +15,6 @@ from app.queue import enqueue_job, get_job_status, QUOTE_QUEUE
 from app.region import get_active_region
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter()
 
 
@@ -57,7 +58,7 @@ async def submit_quote_request(req: QuoteRequest) -> QuoteResponse:
             "longitude": req.lng,
             "aoi_geojson": req.polygon_geojson,
         }).execute()
-    except Exception as e:
+    except Exception:
         # Fallback: just enqueue without DB (for local dev)
         pass
 
@@ -93,17 +94,14 @@ async def get_quote_status(job_id: str) -> dict:
         job = supabase.table("jobs").select("*").eq("id", job_id).single().execute()
         if job.data:
             result = {"job_id": job_id, "status": job.data["status"]}
-
             # If completed, include assessment + quote
             if job.data["status"] == "completed":
                 assessment = supabase.table("assessments").select("*").eq("job_id", job_id).single().execute()
                 if assessment.data:
                     result["assessment"] = assessment.data
-
                 quote = supabase.table("quotes").select("*").eq("job_id", job_id).single().execute()
                 if quote.data:
                     result["quote"] = quote.data
-
             return result
     except Exception:
         pass
@@ -111,9 +109,9 @@ async def get_quote_status(job_id: str) -> dict:
     return {"job_id": job_id, "status": "unknown"}
 
 
-# ═══════════════════════════════════════════════════════════════
-# Synchronous endpoint — runs the FM pipeline inline (no Redis/worker)
-# ═══════════════════════════════════════════════════════════════
+# ========================================================================
+# Synchronous endpoint -- runs the FM pipeline inline (no Redis/worker)
+# ========================================================================
 
 class SyncQuoteResponse(BaseModel):
     """Result of a synchronous /quote/sync request."""
@@ -130,23 +128,67 @@ class SyncQuoteResponse(BaseModel):
     model_versions: dict
 
 
-@router.post("/sync", response_model=SyncQuoteResponse)
-async def submit_quote_sync(req: QuoteRequest) -> SyncQuoteResponse:
-    """Run the foundation-model pipeline inline and return the result immediately.
+async def _proxy_to_serverless(
+    req: QuoteRequest, endpoint_id: str, api_key: str
+) -> SyncQuoteResponse:
+    """Proxy the inference request to the RunPod Serverless endpoint."""
+    url = f"https://api.runpod.ai/v2/{endpoint_id}/runsync"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "input": {
+            "lat": req.lat,
+            "lng": req.lng,
+            "address": req.address,
+            "material": req.material,
+            "region": req.region if req.region != "default" else None,
+        }
+    }
 
-    This endpoint:
-    1. Geocodes the address (if no lat/lng given) — biased to the active region
-    2. Fetches a satellite tile (auto-selects best available imagery source)
-    3. Runs the FM pipeline (OSM building polygon + NIM VLM corrosion assessment)
-    4. Computes the quote with regional pricing
+    t0 = time.time()
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(url, json=payload, headers=headers)
 
-    Use this for demos and simple integrations where you don't want to manage
-    a Redis worker. For high-throughput production, use POST /quote (async).
-    """
-    if not req.address and (req.lat is None or req.lng is None):
-        raise HTTPException(status_code=400, detail="Provide either address or lat/lng coordinates")
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"RunPod serverless returned {resp.status_code}: {resp.text[:500]}",
+        )
 
-    # Lazy imports — only loaded when this endpoint is hit
+    data = resp.json()
+
+    # Handle errors from the worker
+    if data.get("error"):
+        raise HTTPException(status_code=502, detail=f"Inference error: {data['error']}")
+
+    output = data.get("output", {})
+    processing_time_ms = int((time.time() - t0) * 1000)
+
+    # Map serverless output to SyncQuoteResponse
+    assessment = output.get("assessment", {})
+    quote = output.get("quote", {})
+    models = output.get("model_versions", {})
+
+    return SyncQuoteResponse(
+        job_id=data.get("id", str(uuid.uuid4())),
+        status=output.get("status", "completed"),
+        address=req.address,
+        lat=req.lat,
+        lng=req.lng,
+        gsd_m=output.get("gsd_m", 0.3),
+        tile_source=models.get("roof", "serverless"),
+        assessment=assessment,
+        quote=quote,
+        processing_time_ms=processing_time_ms,
+        model_versions=models,
+    )
+
+
+async def _run_local_pipeline(req: QuoteRequest) -> SyncQuoteResponse:
+    """Run the FM pipeline locally (requires full ML stack)."""
+    # Lazy imports -- only loaded when this endpoint is hit
     from app.inference.pipeline_fm import create_fm_pipeline
     from app.inference.worker import fetch_tiles_for_job, geocode_address
     from app.quote_engine import compute_quote
@@ -155,7 +197,7 @@ async def submit_quote_sync(req: QuoteRequest) -> SyncQuoteResponse:
     region = get_active_region()
     t0 = time.time()
 
-    # 1. Geocode if needed (biased to active region)
+    # 1. Geocode if needed
     lat, lng = req.lat, req.lng
     if (lat is None or lng is None) and req.address:
         try:
@@ -164,11 +206,7 @@ async def submit_quote_sync(req: QuoteRequest) -> SyncQuoteResponse:
             raise HTTPException(status_code=400, detail=f"Geocoding failed: {e}") from e
 
     # 2. Fetch satellite tile
-    job_for_fetch = {
-        "lat": lat,
-        "lng": lng,
-        "source": None,  # auto-select based on configured keys
-    }
+    job_for_fetch = {"lat": lat, "lng": lng, "source": None}
     tile_array, gsd, tile_bounds = await fetch_tiles_for_job(job_for_fetch)
     if tile_array is None:
         raise HTTPException(status_code=502, detail="Failed to fetch satellite tile")
@@ -184,12 +222,8 @@ async def submit_quote_sync(req: QuoteRequest) -> SyncQuoteResponse:
 
     try:
         result = await pipeline.analyze(
-            tile_image=tile_array,
-            lat=lat,
-            lng=lng,
-            gsd=gsd,
-            address=req.address or "",
-            tile_bounds=tile_bounds,
+            tile_image=tile_array, lat=lat, lng=lng, gsd=gsd,
+            address=req.address or "", tile_bounds=tile_bounds,
         )
     except Exception as e:
         logger.exception("FM pipeline failed")
@@ -236,3 +270,30 @@ async def submit_quote_sync(req: QuoteRequest) -> SyncQuoteResponse:
             "corrosion": pipeline.corrosion_model_uri,
         },
     )
+
+
+@router.post("/sync", response_model=SyncQuoteResponse)
+async def submit_quote_sync(req: QuoteRequest) -> SyncQuoteResponse:
+    """Run the foundation-model pipeline and return the result immediately.
+
+    Two modes:
+    1. **Serverless proxy** (default): Forwards to the RunPod Serverless
+       inference endpoint when RUNPOD_ENDPOINT_ID is set.
+    2. **Local pipeline**: Runs the FM pipeline inline when the full
+       ML stack (torch, rasterio) is available and no endpoint ID is set.
+
+    Use this for demos and simple integrations. For high-throughput
+    production, use POST /quote (async with Redis worker).
+    """
+    if not req.address and (req.lat is None or req.lng is None):
+        raise HTTPException(status_code=400, detail="Provide either address or lat/lng coordinates")
+
+    endpoint_id = os.getenv("RUNPOD_ENDPOINT_ID")
+    api_key = os.getenv("RUNPOD_API_KEY")
+
+    # Serverless proxy mode (default for production)
+    if endpoint_id and api_key:
+        return await _proxy_to_serverless(req, endpoint_id, api_key)
+
+    # Local pipeline mode (requires full ML stack)
+    return await _run_local_pipeline(req)
