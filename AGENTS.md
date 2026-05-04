@@ -48,12 +48,40 @@ python ml/data/check_licenses.py   # CI gate: no NC data in prod
 - ⚠️ Research only: AIRS, Inria — check terms before prod use
 - ❌ NC (never in prod): xBD (CC-BY-NC-4.0), LandCover.ai (CC-BY-NC-SA)
 
+## Production Deployment (Phase 3 — COMPLETE)
+
+### RunPod Serverless Inference Endpoint
+- **Endpoint ID**: `kpw4qpndjl9y55`
+- **Template ID**: `0tmokvcftc`
+- **Docker Image**: `docker.io/khiwnitigetintheq/roof-corrosion-inference:sha-b2b831e`
+- **GPU**: AMPERE_16 (A10/16GB)
+- **Workers**: min=0, max=2, idle_timeout=300s
+- **API URL**: `https://api.runpod.ai/v2/kpw4qpndjl9y55/runsync`
+- **Pipeline**: FM (OSM footprint + NVIDIA NIM VLM corrosion assessment)
+- **Key Fix**: Handler must be `async def handler(job)` with `await _run(job)` — RunPod runs inside an existing event loop, so `asyncio.run()` causes "already running" crash
+
+### API Service (FastAPI)
+- **Docker Image**: `docker.io/khiwnitigetintheq/roof-corrosion-api:sha-b2b831e`
+- **Lite Image**: No torch/rasterio/gdal — just FastAPI + httpx proxy
+- **Serverless Proxy Mode**: When `RUNPOD_ENDPOINT_ID` is set, `/quote/sync` proxies to the inference endpoint instead of running local ML pipeline
+- **Deployment**: Can run as RunPod Pod (with GPU) or any container host with the RUNPOD_ENDPOINT_ID env var
+
+### Deploy Script
+```bash
+./scripts/deploy-production.sh [inference|api|all]
+```
+
+### Docker Image Cleanup
+- Removed `dumb-init` from ENTRYPOINT (interferes with RunPod serverless runtime)
+- Removed `HEALTHCHECK` from inference Dockerfile (not supported in serverless)
+- All Dockerfiles use plain `CMD` for maximum compatibility
+
 ## Phased Roadmap
-1. Phase 0: Monorepo + CI ← **current**
+1. Phase 0: Monorepo + CI ✅
 2. Phase 1a: Open-data baseline + go/no-go gate
 3. Phase 1b: Paid data + synthetic + DA (gated on Phase 1a results)
 4. Phase 2: Production training pipeline
-5. Phase 3: RunPod serving
+5. Phase 3: RunPod serving ✅ **COMPLETE**
 6. Phase 4: Vercel frontend
 7. Phase 5: MLOps loop (drift, active learning, shadow deploys)
 8. Phase 6: Quote engine + confidence gating
