@@ -48,6 +48,7 @@ data/thailand/
 data/maxar_cache/
 data/nearmap_cache/
 models/
+!ml/train/models/
 # Allow checked-in data documentation
 !data/README.md
 !data/.gitkeep
@@ -80,3 +81,4 @@ Thumbs.db
 # Logs
 *.log
 logs/
+.gitnexus

@@ -1,0 +1,164 @@
+# Training recipe: Clay v1.5 + ViT-Adapter + Mask2Former multi-task
+# Architecture Decision: ADR-002
+# Design-doc §6
+
+experiment_name: "clay_multitask_tier1_tier3"
+seed: 42
+
+# ── Model ──────────────────────────────────────────────────────────────────
+model:
+  backbone: "clay_v1.5"
+  hidden_dim: 256
+  num_queries: 100
+  num_material_classes: 5  # metal, tile, concrete, vegetation, other
+  num_corrosion_classes: 2  # rust, no-rust
+  num_severity_levels: 4    # none, light, moderate, severe
+  freeze_backbone_epochs: 5
+
+# ── Data ───────────────────────────────────────────────────────────────────
+data:
+  # Stage 0: RoofNet pretrain
+  roofnet:
+    root: "data/roofnet"
+    num_classes: 14
+    train_split: 0.8
+    val_split: 0.1
+    test_split: 0.1
+
+  # Stage 1: Silver labels (Grounded-SAM-2 auto-label on Thailand)
+  silver_thailand:
+    root: "data/silver_thailand"
+    source: "grounded_sam2"
+    filter_iou_overture: 0.7
+    min_sam_confidence: 0.5
+    num_samples: 5000
+
+  # Stage 2: Gold labels (manual HITL)
+  gold_thailand:
+    root: "data/gold_thailand"
+    num_samples: 500
+
+  # Synthetic rust (ControlNet-canny + LoRA)
+  synthetic_rust:
+    root: "data/synthetic_rust"
+    num_samples: 2000
+    soft_target_weight: 0.7
+
+  # Tile size and bands
+  image_size: 512
+  s2_bands: ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"]
+  vhr_bands: ["red", "green", "blue", "nir"]
+
+# ── Augmentation ───────────────────────────────────────────────────────────
+augmentation:
+  use_cutmix: true
+  use_classmix: false  # enable after material head is stable
+  random_crop: 512
+  hflip_prob: 0.5
+  rot90: true
+  multi_scale: [0.75, 1.0, 1.25, 1.5]
+  color_jitter:
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.1
+
+# ── Training ───────────────────────────────────────────────────────────────
+training:
+  # Stage progression
+  stages:
+    - name: "roofnet_pretrain"
+      epochs: 50
+      datasets: ["roofnet"]
+      batch_size: 16
+      precision: "bf16"
+
+    - name: "silver_finetune"
+      epochs: 30
+      datasets: ["silver_thailand"]
+      batch_size: 16
+      precision: "bf16"
+
+    - name: "gold_finetune"
+      epochs: 50
+      datasets: ["gold_thailand"]
+      batch_size: 16
+      precision: "bf16"
+
+    - name: "ssl_unimatch"
+      epochs: 20
+      datasets: ["silver_thailand", "unlabeled_pool"]
+      batch_size: 8
+      precision: "bf16"
+      ema_decay: 0.999
+      pseudo_threshold: 0.95
+
+  # Optimizer
+  optimizer:
+    name: "adamw"
+    lr_backbone: 1.0e-5
+    lr_adapter: 5.0e-5
+    lr_decoder: 2.0e-4
+    weight_decay: 0.05
+    layer_wise_lr_decay: 0.85
+
+  scheduler:
+    name: "cosine"
+    warmup_epochs: 5
+    min_lr_ratio: 0.01
+
+  # Loss weights
+  loss:
+    material:
+      dice_weight: 0.5
+      ce_weight: 0.5
+    corrosion:
+      focal_weight: 1.0
+      gamma: 2.0
+    severity:
+      ordinal_weight: 1.0
+
+# ── Active Learning ────────────────────────────────────────────────────────
+active_learning:
+  strategy: "batchbald"
+  mc_dropout_iterations: 25
+  acquisition_batch_size: 200
+  max_iterations: 2
+  budget_per_iteration: 100  # USD (labeling cost)
+
+# ── Evaluation ─────────────────────────────────────────────────────────────
+evaluation:
+  metrics:
+    - "miou"
+    - "f1"
+    - "recall"
+    - "precision"
+  val_interval: 1
+  save_best_metric: "val_material_miou"
+
+# ── Inference ─────────────────────────────────────────────────────────────
+inference:
+  tta:
+    - "hflip"
+    - "rot90"
+    - "multi_scale_0.75"
+    - "multi_scale_1.25"
+  ensemble:
+    num_models: 3
+    weight_by_val_miou: true
+  target_latency_ms: 60
+  precision: "fp16"
+
+# ── Logging & Checkpoints ──────────────────────────────────────────────────
+logging:
+  framework: "mlflow"
+  experiment_name: "${experiment_name}"
+  log_interval: 50
+  checkpoint_interval: 5
+  keep_last_n: 3
+
+# ── Hardware ───────────────────────────────────────────────────────────────
+hardware:
+  device: "cuda"
+  num_gpus: 1
+  gpu_type: "A100_80GB"
+  strategy: "ddp"
