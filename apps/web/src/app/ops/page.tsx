@@ -3,30 +3,29 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL
-  ? `${process.env.NEXT_PUBLIC_API_URL}`
-  : "/api";
-
-interface QueueStats {
-  quote_queue: number;
-  feedback_queue: number;
-  relabel_queue: number;
+interface Job {
+  id: string;
+  status: string;
+  source: string;
+  submitted_at: string;
+  completed_at: string | null;
+  roof_model_version: string | null;
+  overlay_image_s3_key: string | null;
 }
 
 export default function OpsPage() {
   const [activeTab, setActiveTab] = useState<"jobs" | "models" | "drift" | "relabel">("jobs");
-  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobsLoading, setJobsLoading] = useState(true);
 
   useEffect(() => {
-    // Fetch queue stats
-    fetch(`${API_BASE}/health`)
-      .then(() => {
-        // Stub: in production, fetch from /ops/queue-stats
-        setQueueStats({ quote_queue: 0, feedback_queue: 0, relabel_queue: 0 });
+    fetch("/api/ops/jobs?limit=20")
+      .then((res) => res.json())
+      .then((data) => {
+        setJobs(data.jobs ?? []);
+        setJobsLoading(false);
       })
-      .catch(() => {
-        setQueueStats({ quote_queue: 0, feedback_queue: 0, relabel_queue: 0 });
-      });
+      .catch(() => setJobsLoading(false));
   }, []);
 
   const tabs = [
@@ -35,6 +34,26 @@ export default function OpsPage() {
     { id: "drift", label: "Drift Monitor" },
     { id: "relabel", label: "Relabel Queue" },
   ] as const;
+
+  const tierFromSource = (source: string) => {
+    switch (source) {
+      case "maxar": return "Tier 0 (S2)";
+      case "nearmap": return "Tier 1 (VHR)";
+      case "drone": return "Tier 3 (Drone)";
+      default: return source;
+    }
+  };
+
+  const statusColor = (status: string) => {
+    switch (status) {
+      case "queued": return "bg-slate-100 text-slate-700";
+      case "processing": return "bg-blue-100 text-blue-700";
+      case "completed": return "bg-green-100 text-green-700";
+      case "failed": return "bg-red-100 text-red-700";
+      case "requires_review": return "bg-orange-100 text-orange-700";
+      default: return "bg-slate-100 text-slate-700";
+    }
+  };
 
   return (
     <div className="min-h-screen bg-slate-900 text-white">
@@ -72,30 +91,63 @@ export default function OpsPage() {
           {activeTab === "jobs" && (
             <div>
               <h1 className="text-2xl font-bold mb-6">Job Queue</h1>
-              <div className="grid grid-cols-3 gap-4 mb-8">
-                <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                  <p className="text-sm text-slate-400">Quote Queue</p>
-                  <p className="text-3xl font-bold">{queueStats?.quote_queue ?? "—"}</p>
-                </div>
-                <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                  <p className="text-sm text-slate-400">Feedback Queue</p>
-                  <p className="text-3xl font-bold">{queueStats?.feedback_queue ?? "—"}</p>
-                </div>
-                <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
-                  <p className="text-sm text-slate-400">Relabel Queue</p>
-                  <p className="text-3xl font-bold text-orange-400">{queueStats?.relabel_queue ?? "—"}</p>
-                </div>
-              </div>
-              <div className="bg-slate-800 rounded-lg border border-slate-700 p-6">
-                <p className="text-slate-400 text-sm">
-                  Job history and real-time status will appear here when connected to the API.
-                </p>
-                <div className="mt-4 space-y-2">
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="w-2 h-2 bg-yellow-400 rounded-full"></span>
-                    <span className="text-slate-300">No jobs in queue</span>
+              <div className="grid grid-cols-5 gap-3 mb-6">
+                {["queued", "processing", "completed", "failed", "requires_review"].map((s) => (
+                  <div key={s} className="bg-slate-800 rounded-lg p-3 border border-slate-700">
+                    <p className="text-xs text-slate-400 capitalize">{s.replace("_", " ")}</p>
+                    <p className="text-2xl font-bold">{jobs.filter((j) => j.status === s).length}</p>
                   </div>
-                </div>
+                ))}
+              </div>
+              <div className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-700 text-slate-400 text-left">
+                      <th className="py-2 px-4">ID</th>
+                      <th className="py-2 px-4">Status</th>
+                      <th className="py-2 px-4">Tier</th>
+                      <th className="py-2 px-4">Area</th>
+                      <th className="py-2 px-4">Corrosion</th>
+                      <th className="py-2 px-4">Severity</th>
+                      <th className="py-2 px-4">Submitted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {jobsLoading ? (
+                      <tr><td colSpan={7} className="py-8 text-center text-slate-500">Loading...</td></tr>
+                    ) : jobs.length === 0 ? (
+                      <tr><td colSpan={7} className="py-8 text-center text-slate-500">No jobs yet</td></tr>
+                    ) : (
+                      jobs.map((job) => {
+                        const meta = (job as any).metadata || {};
+                        const tier = meta.tier ?? 0;
+                        const area = meta.area_m2 ?? "—";
+                        const corrosion = meta.corrosion_prob !== undefined ? `${(meta.corrosion_prob * 100).toFixed(0)}%` : "—";
+                        const severity = meta.severity ?? "—";
+                        const severityColor = severity === "severe" ? "text-red-400" : severity === "moderate" ? "text-orange-400" : severity === "light" ? "text-yellow-400" : "text-green-400";
+                        return (
+                          <tr key={job.id} className="border-b border-slate-700/50">
+                            <td className="py-2 px-4 font-mono text-xs">{job.id.slice(0, 8)}...</td>
+                            <td className="py-2 px-4">
+                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusColor(job.status)}`}>
+                                {job.status}
+                              </span>
+                            </td>
+                            <td className="py-2 px-4">
+                              <span className={`text-xs px-2 py-0.5 rounded font-medium ${tier === 1 ? "bg-blue-900 text-blue-300" : "bg-slate-700 text-slate-300"}`}>
+                                Tier {tier}
+                              </span>
+                            </td>
+                            <td className="py-2 px-4 text-slate-300 text-xs">{typeof area === "number" ? `${area.toFixed(0)} m²` : area}</td>
+                            <td className="py-2 px-4 text-slate-300 text-xs">{corrosion}</td>
+                            <td className={`py-2 px-4 text-xs font-medium ${severityColor}`}>{severity}</td>
+                            <td className="py-2 px-4 text-slate-400 text-xs">{new Date(job.submitted_at).toLocaleString()}</td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
@@ -110,14 +162,14 @@ export default function OpsPage() {
                       <th className="text-left py-2">Model</th>
                       <th className="text-left py-2">Version</th>
                       <th className="text-left py-2">Stage</th>
-                      <th className="text-right py-2">Roof IoU</th>
+                      <th className="text-right py-2">Material IoU</th>
                       <th className="text-right py-2">Corrosion IoU</th>
-                      <th className="text-right py-2">Area MAPE</th>
+                      <th className="text-right py-2">Severity IoU</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr className="border-b border-slate-700">
-                      <td className="py-2">Roof Detector (SegFormer-B3)</td>
+                      <td className="py-2">Clay v1.5 + ViT-Adapter + Mask2Former (3-head)</td>
                       <td className="py-2 font-mono">v0.1.0-dev</td>
                       <td className="py-2"><span className="px-2 py-0.5 bg-yellow-900 text-yellow-400 text-xs rounded">dev</span></td>
                       <td className="py-2 text-right">—</td>
@@ -125,9 +177,9 @@ export default function OpsPage() {
                       <td className="py-2 text-right">—</td>
                     </tr>
                     <tr className="border-b border-slate-700">
-                      <td className="py-2">Corrosion Detector (SegFormer-B2)</td>
-                      <td className="py-2 font-mono">v0.1.0-dev</td>
-                      <td className="py-2"><span className="px-2 py-0.5 bg-yellow-900 text-yellow-400 text-xs rounded">dev</span></td>
+                      <td className="py-2">Tier-0 Baseline (smp U-Net + EfficientNet-B7)</td>
+                      <td className="py-2 font-mono">v0.0.1-stub</td>
+                      <td className="py-2"><span className="px-2 py-0.5 bg-slate-700 text-slate-300 text-xs rounded">stub</span></td>
                       <td className="py-2 text-right">—</td>
                       <td className="py-2 text-right">—</td>
                       <td className="py-2 text-right">—</td>
@@ -135,8 +187,8 @@ export default function OpsPage() {
                   </tbody>
                 </table>
                 <p className="text-slate-500 text-xs mt-4">
-                  Metrics will populate after Phase 1a baseline training completes.
-                  Models must pass frozen test set gates before promotion to staging/production.
+                  Metrics populate after Phase 1a open-data baseline training.
+                  Clay model gates: material IoU ≥ 0.70, corrosion IoU ≥ 0.45, severity IoU ≥ 0.50.
                 </p>
               </div>
             </div>
