@@ -24,6 +24,7 @@ export default function PortalPage() {
   const [error, setError] = useState<string | null>(null);
   const [polygonArea, setPolygonArea] = useState<number | null>(null);
   const [drawnPolygon, setDrawnPolygon] = useState<GeoJSON.Polygon | null>(null);
+  const [selectedTier, setSelectedTier] = useState<number>(0);
   const [quote, setQuote] = useState<any | null>(null);
   const [quoteLoading, setQuoteLoading] = useState(false);
 
@@ -161,7 +162,7 @@ export default function PortalPage() {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ polygon: drawnPolygon, tier: 0 }),
+        body: JSON.stringify({ polygon: drawnPolygon, tier: selectedTier }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Request failed");
@@ -271,16 +272,41 @@ export default function PortalPage() {
         <div className="w-full lg:w-96 bg-white border-l p-6 overflow-y-auto">
           <h1 className="text-2xl font-bold text-slate-900 mb-2">Roof Analysis</h1>
           <p className="text-slate-500 mb-6 text-sm">
-            Draw a polygon around your roof on the map. We will run a free Tier-0 preliminary analysis using Sentinel-2 imagery.
+            {selectedTier === 0
+              ? "Free Tier-0 preliminary analysis using Sentinel-2 imagery (±30% range)."
+              : "Tier-1 binding quote using Pléiades 50cm VHR imagery (±15% range). Imagery cost billed separately."}
           </p>
+
+          {/* Tier selector */}
+          <div className="flex gap-1 mb-4 bg-slate-100 rounded-lg p-1">
+            {[0, 1].map((tier) => (
+              <button
+                key={tier}
+                onClick={() => setSelectedTier(tier)}
+                className={`flex-1 px-3 py-2 rounded-md text-sm font-medium transition ${
+                  selectedTier === tier
+                    ? tier === 0
+                      ? "bg-white text-orange-600 shadow-sm"
+                      : "bg-white text-blue-600 shadow-sm"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
+                Tier {tier}
+              </button>
+            ))}
+          </div>
 
           <div className="flex gap-2 mb-4">
             <button
               onClick={submitJob}
               disabled={loading || !drawnPolygon || (polygonArea ?? 0) < 10 || (polygonArea ?? 0) > 10000}
-              className="flex-1 px-4 py-3 bg-orange-500 text-white rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed transition"
+              className={`flex-1 px-4 py-3 rounded-lg font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                selectedTier === 1
+                  ? "bg-blue-600 text-white hover:bg-blue-700"
+                  : "bg-orange-500 text-white hover:bg-orange-600"
+              }`}
             >
-              {loading ? "Submitting..." : "Analyze Roof"}
+              {loading ? "Submitting..." : selectedTier === 1 ? "Get Binding Quote" : "Analyze Roof"}
             </button>
             <button
               onClick={clearDrawing}
@@ -471,14 +497,15 @@ export default function PortalPage() {
           {!jobId && (
             <div className="text-sm text-slate-500 space-y-2">
               <p className="font-medium text-slate-700">How to use:</p>
-              <ol className="list-decimal list-inside space-y-1">
-                <li>Zoom to your building on the map.</li>
-                <li>Select the polygon tool (top-left).</li>
-                <li>Click around your roof to draw the boundary.</li>
-                <li>Click <strong>Analyze Roof</strong> to submit.</li>
+              <ol className="list-decimal pl-4 space-y-1">
+                <li>Zoom to your roof on the map.</li>
+                <li>Draw a polygon covering the roof area.</li>
+                <li>Click <strong>{selectedTier === 1 ? "Get Binding Quote" : "Analyze Roof"}</strong> to submit.</li>
               </ol>
               <p className="pt-2 text-xs text-slate-400">
-                This is a free preliminary estimate (Tier-0). For a binding quote, upgrade to Tier-1 or Tier-3.
+                {selectedTier === 1
+                  ? "Tier-1 binding quote with Pléiades 50cm imagery. Imagery cost estimated separately before purchase."
+                  : "Free preliminary estimate (Tier-0). For a binding quote, switch to Tier-1 or Tier-3."}
               </p>
             </div>
           )}
