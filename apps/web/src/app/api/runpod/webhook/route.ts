@@ -34,6 +34,9 @@ export async function POST(request: NextRequest) {
         class_percentages: body.class_percentages,
         coarse_breakdown: body.coarse_breakdown,
         confidence: body.confidence,
+        corrosion_prob: body.corrosion_prob,
+        severity: body.severity,
+        corroded_area_px: body.corroded_area_px,
       };
     }
     // Tier-1 extra fields

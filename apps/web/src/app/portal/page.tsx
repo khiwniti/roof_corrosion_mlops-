@@ -184,15 +184,18 @@ export default function PortalPage() {
       const confidence = meta.confidence ?? 0.5;
       const materialPct = meta.coarse_breakdown?.metal_percent ?? 50;
       const material = materialPct > 50 ? "corrugated_metal" : "clay_tile";
+      const corrosionProb = meta.corrosion_prob ?? 0;
+      const severity = meta.severity ?? "none";
+      const corrodedAreaM2 = areaM2 * corrosionProb;
       const res = await fetch("/api/quotation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           jobId,
           roofAreaM2: areaM2,
-          corrodedAreaM2: 0,
-          corrosionPercent: 0,
-          severity: "none",
+          corrodedAreaM2,
+          corrosionPercent: Math.round(corrosionProb * 100),
+          severity,
           confidence,
           material,
           region: "TH",
@@ -358,6 +361,28 @@ export default function PortalPage() {
                       <p className="text-xs text-slate-500">Roof Area</p>
                       <p className="font-semibold text-slate-900">
                         {((job.metadata as any)?.area_m2 ?? polygonArea ?? 0).toFixed(0)} m²
+                      </p>
+                    </div>
+                    <div className="bg-white rounded p-2 border">
+                      <p className="text-xs text-slate-500">Corrosion</p>
+                      <p className="font-semibold text-slate-900">
+                        {(job.metadata as any)?.corrosion_prob !== undefined
+                          ? `${((job.metadata as any).corrosion_prob * 100).toFixed(0)}%`
+                          : "--"}
+                      </p>
+                    </div>
+                    <div className="bg-white rounded p-2 border">
+                      <p className="text-xs text-slate-500">Severity</p>
+                      <p className={`font-semibold ${
+                        (job.metadata as any)?.severity === "severe"
+                          ? "text-red-600"
+                          : (job.metadata as any)?.severity === "moderate"
+                            ? "text-orange-600"
+                            : (job.metadata as any)?.severity === "light"
+                              ? "text-yellow-600"
+                              : "text-green-600"
+                      }`}>
+                        {(job.metadata as any)?.severity ?? "--"}
                       </p>
                     </div>
                     <div className="bg-white rounded p-2 border">

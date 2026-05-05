@@ -14,6 +14,8 @@ def test_predict_shape():
     assert result["material_mask"].shape == (128, 128)
     assert result["material_mask"].dtype == np.uint8
     assert set(np.unique(result["material_mask"])) <= {0, 1, 2, 3, 4}
+    assert "corrosion_prob" in result
+    assert "severity" in result
 
 
 def test_predict_area_sums():
@@ -27,6 +29,10 @@ def test_predict_area_sums():
 
     total_pct = sum(result["class_percentages"].values())
     assert pytest.approx(total_pct, 1e-6) == 100.0
+
+    # Corrosion stub should be proportional to material breakdown
+    assert 0 <= result["corrosion_prob"] <= 1
+    assert result["severity"] in ["none", "light", "moderate", "severe"]
 
 
 def test_estimate_roof_area_defaults():

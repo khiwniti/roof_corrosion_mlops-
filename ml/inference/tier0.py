@@ -112,6 +112,17 @@ def predict(
     tile_pct = class_percentages.get("tile", 0.0)
     other_pct = 100.0 - metal_pct - tile_pct
 
+    # Stub corrosion prediction (heuristic: metal roofs in tropical climates
+    # have higher corrosion probability)
+    corrosion_prob = 0.25 if metal_pct > tile_pct else 0.15
+    severity = "none"
+    if corrosion_prob > 0.3:
+        severity = "moderate"
+    elif corrosion_prob > 0.15:
+        severity = "light"
+
+    corroded_px = int(mask.size * corrosion_prob)
+
     return {
         "material_mask": mask,
         "class_names": CLASS_NAMES,
@@ -122,6 +133,9 @@ def predict(
             "tile_percent": tile_pct,
             "other_percent": max(0.0, other_pct),
         },
+        "corrosion_prob": round(corrosion_prob, 2),
+        "severity": severity,
+        "corroded_area_px": corroded_px,
         "confidence": 0.5,  # stub: Tier-0 is always ±30%
         "model_version": "tier0-stub-v0",
     }
