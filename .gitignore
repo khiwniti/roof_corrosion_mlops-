@@ -54,6 +54,14 @@ models/
 !data/.gitkeep
 !data/.gitkeep
 
+# Local environment files
+.env.local
+.env.*.local
+
+# Local test outputs
+local_test_outputs/
+reports/cml/
+
 # Environment
 .env
 .env.*
