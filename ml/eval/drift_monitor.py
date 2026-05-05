@@ -10,7 +10,7 @@ Alerts are sent to the ops dashboard and Slack webhook if drift exceeds threshol
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -60,7 +60,7 @@ def fetch_production_predictions(days: int = 30) -> pd.DataFrame:
     """Fetch recent production predictions from Supabase."""
     try:
         supabase = get_supabase()
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         result = supabase.table("assessments").select(
             "*, jobs(gsd_m, latitude, longitude, tile_capture_date)"
         ).gte("created_at", cutoff).execute()
@@ -114,7 +114,7 @@ def compute_input_drift_report(
 
     # Save HTML report
     DRIFT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = DRIFT_REPORTS_DIR / f"input_drift_{datetime.utcnow().strftime('%Y%m%d')}.html"
+    report_path = DRIFT_REPORTS_DIR / f"input_drift_{datetime.now(UTC).strftime('%Y%m%d')}.html"
     report.save_html(str(report_path))
 
     # Extract drift metrics
@@ -151,7 +151,7 @@ def compute_prediction_drift_report(
     )
 
     DRIFT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = DRIFT_REPORTS_DIR / f"prediction_drift_{datetime.utcnow().strftime('%Y%m%d')}.html"
+    report_path = DRIFT_REPORTS_DIR / f"prediction_drift_{datetime.now(UTC).strftime('%Y%m%d')}.html"
     report.save_html(str(report_path))
 
     result = report.as_dict()
@@ -209,7 +209,7 @@ def run_drift_check(days: int = 30) -> dict:
     )
 
     report = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "production_window_days": days,
         "production_sample_size": len(production),
         "any_drift_detected": any_drift,
@@ -220,7 +220,7 @@ def run_drift_check(days: int = 30) -> dict:
 
     # Save report
     DRIFT_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = DRIFT_REPORTS_DIR / f"drift_summary_{datetime.utcnow().strftime('%Y%m%d')}.json"
+    report_path = DRIFT_REPORTS_DIR / f"drift_summary_{datetime.now(UTC).strftime('%Y%m%d')}.json"
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2, default=str)
 

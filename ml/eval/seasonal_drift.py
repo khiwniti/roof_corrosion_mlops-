@@ -12,7 +12,7 @@ Install: pip install alibi-detect>=0.12.0
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -35,7 +35,7 @@ def compute_context_features(
         try:
             dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
         except Exception:
-            dt = datetime.utcnow()
+            dt = datetime.now(UTC)
         contexts.append([
             dt.month,
             dt.timetuple().tm_yday,
