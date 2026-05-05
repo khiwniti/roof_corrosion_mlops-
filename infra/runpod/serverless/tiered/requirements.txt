@@ -1,0 +1,15 @@
+boto3>=1.34.0
+numpy>=1.26.0
+Pillow>=10.0.0
+scipy>=1.11.0
+# Phase 1a: CDSE ingestion stack
+pystac-client>=0.9.0
+odc-stac>=0.3.11
+openeo>=0.48.0
+xarray>=2024.1.0
+rioxarray>=0.15.0
+shapely>=2.0.0
+geopandas>=1.0.0
+# Phase 1a: cloud masking
+omnicloudmask>=1.7.0
+s2cloudless>=1.7.0

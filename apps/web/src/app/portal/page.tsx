@@ -1,108 +1,244 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
+import maplibregl from "maplibre-gl";
+import "maplibre-gl/dist/maplibre-gl.css";
+import { MaplibreTerradrawControl } from "@watergis/maplibre-gl-terradraw";
+import "@watergis/maplibre-gl-terradraw/dist/maplibre-gl-terradraw.css";
+import { area } from "@turf/area";
+import { polygon as turfPolygon } from "@turf/helpers";
+import { supabaseBrowser } from "@/lib/supabase";
+import type { JobRow } from "@/lib/supabase";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL
-  ? `${process.env.NEXT_PUBLIC_API_URL}`
-  : "/api";
-
-interface JobResult {
-  job_id: string;
-  status: string;
-  assessment?: {
-    roof_area_m2: number;
-    corroded_area_m2: number;
-    corrosion_percent: number;
-    severity: string;
-    confidence: number;
-    overlay_image_s3_key?: string;
-  };
-  quote?: {
-    total_amount: number;
-    currency: string;
-    line_items: Array<{
-      description: string;
-      quantity: number;
-      unit: string;
-      unit_price: number;
-      total: number;
-    }>;
-    requires_human_review: boolean;
-  };
-}
+const MAPTILER_KEY = process.env.NEXT_PUBLIC_MAPTILER_KEY ?? "";
 
 export default function PortalPage() {
-  const [address, setAddress] = useState("");
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<maplibregl.Map | null>(null);
+  const drawControlRef = useRef<MaplibreTerradrawControl | null>(null);
+
   const [jobId, setJobId] = useState<string | null>(null);
-  const [jobResult, setJobResult] = useState<JobResult | null>(null);
+  const [job, setJob] = useState<JobRow | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [polygonArea, setPolygonArea] = useState<number | null>(null);
+  const [drawnPolygon, setDrawnPolygon] = useState<GeoJSON.Polygon | null>(null);
+  const [quote, setQuote] = useState<any | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+
+  // Initialize MapLibre + terra-draw
+  useEffect(() => {
+    if (!mapContainerRef.current) return;
+
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      style: MAPTILER_KEY
+        ? `https://api.maptiler.com/maps/streets/style.json?key=${MAPTILER_KEY}`
+        : "https://demotiles.maplibre.org/style.json",
+      center: [100.5018, 13.7563], // Bangkok
+      zoom: 12,
+    });
+
+    const draw = new MaplibreTerradrawControl({
+      modes: ["polygon", "select", "delete-selection"],
+      open: true,
+    });
+
+    map.addControl(draw, "top-left");
+    mapRef.current = map;
+    drawControlRef.current = draw;
+
+    // Listen for terra-draw changes via the control's internal terra-draw instance
+    const td = (draw as any).getTerraDrawInstance?.();
+    if (td) {
+      td.on("change", () => {
+        const snapshot = td.getSnapshot();
+        const poly = snapshot.find((f: any) => f.geometry.type === "Polygon");
+        if (poly) {
+          const geoJsonPolygon: GeoJSON.Polygon = {
+            type: "Polygon",
+            coordinates: poly.geometry.coordinates,
+          };
+          setDrawnPolygon(geoJsonPolygon);
+          const a = area(turfPolygon(poly.geometry.coordinates));
+          setPolygonArea(a);
+        } else {
+          setDrawnPolygon(null);
+          setPolygonArea(null);
+        }
+      });
+    }
+
+    return () => {
+      map.remove();
+    };
+  }, []);
+
+  // Supabase Realtime subscription
+  useEffect(() => {
+    if (!jobId) return;
+
+    const channel = supabaseBrowser
+      .channel(`job:${jobId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "jobs",
+          filter: `id=eq.${jobId}`,
+        },
+        (payload) => {
+          setJob(payload.new as JobRow);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabaseBrowser.removeChannel(channel);
+    };
+  }, [jobId]);
+
+  // Mask overlay on MapLibre when job completes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !drawnPolygon || job?.status !== "completed" || !job?.overlay_image_s3_key) return;
+
+    // Compute bounding box from polygon coordinates
+    const coords = drawnPolygon.coordinates[0];
+    const lons = coords.map((c) => c[0]);
+    const lats = coords.map((c) => c[1]);
+    const bounds: [number, number, number, number] = [
+      Math.min(...lons),
+      Math.min(...lats),
+      Math.max(...lons),
+      Math.max(...lats),
+    ];
+
+    // Add image source + raster layer
+    if (!map.getSource("mask-overlay")) {
+      map.addSource("mask-overlay", {
+        type: "image",
+        url: job.overlay_image_s3_key,
+        coordinates: [
+          [bounds[0], bounds[3]], // top-left
+          [bounds[2], bounds[3]], // top-right
+          [bounds[2], bounds[1]], // bottom-right
+          [bounds[0], bounds[1]], // bottom-left
+        ],
+      });
+      map.addLayer({
+        id: "mask-overlay-layer",
+        type: "raster",
+        source: "mask-overlay",
+        paint: { "raster-opacity": 0.6 },
+      });
+    }
+
+    return () => {
+      if (map.getLayer("mask-overlay-layer")) map.removeLayer("mask-overlay-layer");
+      if (map.getSource("mask-overlay")) map.removeSource("mask-overlay");
+    };
+  }, [job, drawnPolygon]);
 
   const submitJob = useCallback(async () => {
-    if (!address.trim()) return;
+    if (!drawnPolygon) {
+      setError("Please draw a polygon on the map first.");
+      return;
+    }
+    const a = polygonArea ?? 0;
+    if (a < 10 || a > 10000) {
+      setError(`Polygon area ${a.toFixed(0)} m² is out of range (10–10,000 m²).`);
+      return;
+    }
+
     setLoading(true);
     setError(null);
-    setJobResult(null);
-    setJobId(null);
+    setJob(null);
 
     try {
-      // Use the synchronous endpoint — runs the FM pipeline inline
-      const res = await fetch(`${API_BASE}/quote/sync`, {
+      const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address }),
+        body: JSON.stringify({ polygon: drawnPolygon, tier: 0 }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Request failed");
-      setJobId(data.job_id);
-      setJobResult(data);
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      setJobId(data.jobId);
+      setJob({ id: data.jobId, status: "queued", aoi_geojson: drawnPolygon, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } as JobRow);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
       setLoading(false);
     }
-  }, [address]);
+  }, [drawnPolygon, polygonArea]);
 
-  const pollJob = useCallback(async () => {
-    if (!jobId) return;
+  const generateQuote = useCallback(async () => {
+    if (!jobId || !polygonArea) return;
+    setQuoteLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/quote/${jobId}`);
+      const meta = (job?.metadata as any) || {};
+      const areaM2 = meta.area_m2 ?? polygonArea;
+      const confidence = meta.confidence ?? 0.5;
+      const materialPct = meta.coarse_breakdown?.metal_percent ?? 50;
+      const material = materialPct > 50 ? "corrugated_metal" : "clay_tile";
+      const res = await fetch("/api/quotation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId,
+          roofAreaM2: areaM2,
+          corrodedAreaM2: 0,
+          corrosionPercent: 0,
+          severity: "none",
+          confidence,
+          material,
+          region: "TH",
+        }),
+      });
       const data = await res.json();
-      setJobResult(data);
-    } catch {
-      setError("Failed to fetch job status");
+      if (!res.ok) throw new Error(data.error || "Quote failed");
+      setQuote(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Quote failed");
+    } finally {
+      setQuoteLoading(false);
     }
-  }, [jobId]);
+  }, [jobId, polygonArea, job]);
 
-  // Currency-aware price formatter. THB → ฿X,XXX.XX, USD → $X,XXX.XX, etc.
-  const formatPrice = (amount: number, currency: string) => {
-    try {
-      return new Intl.NumberFormat(currency === "THB" ? "th-TH" : "en-US", {
-        style: "currency",
-        currency,
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 2,
-      }).format(amount);
-    } catch {
-      return `${currency} ${amount.toLocaleString()}`;
+  const clearDrawing = useCallback(() => {
+    const draw = drawControlRef.current;
+    if (draw) {
+      const td = (draw as any).getTerraDrawInstance?.();
+      if (td) {
+        const snapshot = td.getSnapshot();
+        snapshot.forEach((f: any) => td.removeFeature(f.id));
+      }
     }
-  };
+    setDrawnPolygon(null);
+    setPolygonArea(null);
+    setJobId(null);
+    setJob(null);
+    setQuote(null);
+    setError(null);
+  }, []);
 
-  const severityColor = (s: string) => {
+  const statusColor = (s: string) => {
     switch (s) {
-      case "none": return "text-green-400";
-      case "light": return "text-yellow-400";
-      case "moderate": return "text-orange-400";
-      case "severe": return "text-red-400";
-      default: return "text-slate-400";
+      case "queued": return "bg-slate-100 text-slate-700";
+      case "processing": return "bg-blue-100 text-blue-700";
+      case "completed": return "bg-green-100 text-green-700";
+      case "failed": return "bg-red-100 text-red-700";
+      case "requires_review": return "bg-orange-100 text-orange-700";
+      default: return "bg-slate-100 text-slate-700";
     }
   };
 
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Nav */}
-      <nav className="flex items-center justify-between px-8 py-4 bg-white border-b">
+      <nav className="flex items-center justify-between px-6 py-3 bg-white border-b">
         <Link href="/" className="flex items-center gap-2">
           <span className="text-xl font-bold text-slate-900">Roof Corrosion AI</span>
         </Link>
@@ -114,167 +250,207 @@ export default function PortalPage() {
         </div>
       </nav>
 
-      <div className="max-w-4xl mx-auto px-8 py-12">
-        <h1 className="text-3xl font-bold text-slate-900 mb-2">Roof Analysis</h1>
-        <p className="text-slate-500 mb-8">
-          Enter your building address to get a satellite-derived corrosion analysis and quote.
-        </p>
-
-        {/* Address input */}
-        <div className="flex gap-3 mb-8">
-          <input
-            type="text"
-            value={address}
-            onChange={(e) => setAddress(e.target.value)}
-            placeholder="e.g. 88 Bangna-Trad Rd, Samut Prakan, Thailand"
-            className="flex-1 px-4 py-3 border rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-orange-400"
-            onKeyDown={(e) => e.key === "Enter" && submitJob()}
-          />
-          <button
-            onClick={submitJob}
-            disabled={loading || !address.trim()}
-            className="px-6 py-3 bg-orange-500 text-white rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed transition"
-          >
-            {loading ? "Submitting..." : "Analyze"}
-          </button>
-        </div>
-
-        {error && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 mb-6">
-            {error}
-          </div>
-        )}
-
-        {/* Job status */}
-        {jobId && (
-          <div className="bg-white rounded-lg border p-6 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-slate-900">Job Status</h2>
-              <button
-                onClick={pollJob}
-                className="px-3 py-1 text-sm bg-slate-100 rounded hover:bg-slate-200"
-              >
-                Refresh
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <span className="text-slate-500">Job ID:</span>
-                <span className="ml-2 font-mono text-slate-900">{jobId.slice(0, 8)}...</span>
-              </div>
-              <div>
-                <span className="text-slate-500">Status:</span>
-                <span className="ml-2 font-semibold text-slate-900">
-                  {jobResult?.status || "queued"}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Assessment results */}
-        {jobResult?.assessment && (
-          <div className="bg-white rounded-lg border p-6 mb-6">
-            <h2 className="text-lg font-semibold text-slate-900 mb-4">Corrosion Assessment</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-              <div>
-                <p className="text-sm text-slate-500">Roof Area</p>
-                <p className="text-2xl font-bold text-slate-900">
-                  {jobResult.assessment.roof_area_m2.toFixed(0)} m²
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Corroded Area</p>
-                <p className="text-2xl font-bold text-red-500">
-                  {jobResult.assessment.corroded_area_m2.toFixed(1)} m²
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Corrosion %</p>
-                <p className="text-2xl font-bold text-orange-500">
-                  {jobResult.assessment.corrosion_percent.toFixed(1)}%
-                </p>
-              </div>
-              <div>
-                <p className="text-sm text-slate-500">Severity</p>
-                <p className={`text-2xl font-bold ${severityColor(jobResult.assessment.severity)}`}>
-                  {jobResult.assessment.severity.charAt(0).toUpperCase() + jobResult.assessment.severity.slice(1)}
-                </p>
-              </div>
-            </div>
-            <div className="mt-4 pt-4 border-t">
-              <p className="text-sm text-slate-500">
-                Model confidence: {(jobResult.assessment.confidence * 100).toFixed(0)}%
-                {jobResult.assessment.confidence < 0.7 && (
-                  <span className="ml-2 text-orange-600 font-medium">
-                    (Low confidence — pending human review)
-                  </span>
-                )}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Quote */}
-        {jobResult?.quote && (
-          <div className="bg-white rounded-lg border p-6 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-slate-900">Quote</h2>
-              {jobResult.quote.requires_human_review && (
-                <span className="px-3 py-1 bg-orange-100 text-orange-700 text-sm rounded-full font-medium">
-                  Pending Review
-                </span>
+      <div className="flex flex-col lg:flex-row h-[calc(100vh-60px)]">
+        {/* Map */}
+        <div className="flex-1 relative">
+          <div ref={mapContainerRef} className="absolute inset-0" />
+          {/* Area badge */}
+          {polygonArea !== null && (
+            <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur rounded-lg px-3 py-2 shadow text-sm font-medium">
+              Area: {polygonArea.toFixed(0)} m²
+              {polygonArea >= 10 && polygonArea <= 10000 ? (
+                <span className="ml-2 text-green-600">✓ Valid</span>
+              ) : (
+                <span className="ml-2 text-red-600">✗ Must be 10–10,000 m²</span>
               )}
             </div>
-            <table className="w-full text-sm mb-4">
-              <thead>
-                <tr className="border-b text-slate-500">
-                  <th className="text-left py-2">Description</th>
-                  <th className="text-right py-2">Qty</th>
-                  <th className="text-right py-2">Unit</th>
-                  <th className="text-right py-2">Unit Price</th>
-                  <th className="text-right py-2">Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {jobResult.quote.line_items.map((item, i) => (
-                  <tr key={i} className="border-b">
-                    <td className="py-2 text-slate-900">{item.description}</td>
-                    <td className="py-2 text-right">{item.quantity}</td>
-                    <td className="py-2 text-right">{item.unit}</td>
-                    <td className="py-2 text-right">
-                      {formatPrice(item.unit_price, jobResult.quote!.currency)}
-                    </td>
-                    <td className="py-2 text-right font-medium">
-                      {formatPrice(item.total, jobResult.quote!.currency)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="flex justify-between items-center pt-4 border-t">
-              <span className="text-lg font-bold text-slate-900">Total</span>
-              <span className="text-2xl font-bold text-orange-500">
-                {formatPrice(jobResult.quote.total_amount, jobResult.quote.currency)}
-              </span>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* Feedback */}
-        {jobResult?.status === "completed" && (
-          <div className="bg-white rounded-lg border p-6">
-            <h2 className="text-lg font-semibold text-slate-900 mb-4">Was this assessment accurate?</h2>
-            <div className="flex gap-3">
-              <button className="px-4 py-2 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 font-medium">
-                Yes, correct
-              </button>
-              <button className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 font-medium">
-                No, something is wrong
-              </button>
-            </div>
+        {/* Sidebar */}
+        <div className="w-full lg:w-96 bg-white border-l p-6 overflow-y-auto">
+          <h1 className="text-2xl font-bold text-slate-900 mb-2">Roof Analysis</h1>
+          <p className="text-slate-500 mb-6 text-sm">
+            Draw a polygon around your roof on the map. We will run a free Tier-0 preliminary analysis using Sentinel-2 imagery.
+          </p>
+
+          <div className="flex gap-2 mb-4">
+            <button
+              onClick={submitJob}
+              disabled={loading || !drawnPolygon || (polygonArea ?? 0) < 10 || (polygonArea ?? 0) > 10000}
+              className="flex-1 px-4 py-3 bg-orange-500 text-white rounded-lg font-semibold hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed transition"
+            >
+              {loading ? "Submitting..." : "Analyze Roof"}
+            </button>
+            <button
+              onClick={clearDrawing}
+              className="px-4 py-3 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 font-medium"
+            >
+              Clear
+            </button>
           </div>
-        )}
+
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm mb-4">
+              {error}
+            </div>
+          )}
+
+          {/* Job status */}
+          {jobId && job && (
+            <div className="bg-slate-50 rounded-lg border p-4 mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-slate-500 font-mono">{jobId.slice(0, 12)}...</span>
+                <span className={`text-xs px-2 py-1 rounded-full font-medium ${statusColor(job.status)}`}>
+                  {job.status}
+                </span>
+              </div>
+              {job.status === "queued" && (
+                <p className="text-sm text-slate-500">Waiting in queue...</p>
+              )}
+              {job.status === "processing" && (
+                <p className="text-sm text-slate-500">Fetching satellite imagery and running analysis...</p>
+              )}
+              {job.status === "completed" && (
+                <div className="space-y-3">
+                  <p className="text-sm text-green-700 font-medium">Analysis complete</p>
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <div className="bg-white rounded p-2 border">
+                      <p className="text-xs text-slate-500">Buildings</p>
+                      <p className="font-semibold text-slate-900">{(job.metadata as any)?.building_count ?? "--"}</p>
+                    </div>
+                    <div className="bg-white rounded p-2 border">
+                      <p className="text-xs text-slate-500">Roof Area</p>
+                      <p className="font-semibold text-slate-900">
+                        {((job.metadata as any)?.area_m2 ?? polygonArea ?? 0).toFixed(0)} m²
+                      </p>
+                    </div>
+                    <div className="bg-white rounded p-2 border">
+                      <p className="text-xs text-slate-500">Metal</p>
+                      <p className="font-semibold text-slate-700">
+                        {(job.metadata as any)?.coarse_breakdown?.metal_percent ?? "--"}%
+                      </p>
+                    </div>
+                    <div className="bg-white rounded p-2 border">
+                      <p className="text-xs text-slate-500">Tile</p>
+                      <p className="font-semibold text-orange-600">
+                        {(job.metadata as any)?.coarse_breakdown?.tile_percent ?? "--"}%
+                      </p>
+                    </div>
+                    <div className="bg-white rounded p-2 border col-span-2">
+                      <p className="text-xs text-slate-500">Confidence</p>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden">
+                          <div
+                            className="bg-green-500 h-full rounded-full"
+                            style={{ width: `${((job.metadata as any)?.confidence ?? 0.5) * 100}%` }}
+                          />
+                        </div>
+                        <span className="font-semibold text-slate-900 text-xs">
+                          {(((job.metadata as any)?.confidence ?? 0.5) * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  {!quote && (
+                    <button
+                      onClick={generateQuote}
+                      disabled={quoteLoading}
+                      className="w-full px-4 py-2 bg-orange-500 text-white rounded-lg font-medium hover:bg-orange-600 disabled:opacity-50 transition text-sm"
+                    >
+                      {quoteLoading ? "Generating..." : "Generate Quotation"}
+                    </button>
+                  )}
+                  {quote && (
+                    <div className="bg-white rounded-lg border p-3 text-sm">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-semibold text-slate-900">Quotation</span>
+                        {quote.requires_human_review && (
+                          <span className="text-xs px-2 py-0.5 bg-orange-100 text-orange-700 rounded-full">Pending Review</span>
+                        )}
+                      </div>
+                      <table className="w-full text-xs mb-2">
+                        <tbody>
+                          {quote.line_items.map((item: any, i: number) => (
+                            <tr key={i} className="border-b">
+                              <td className="py-1 text-slate-700">{item.description}</td>
+                              <td className="py-1 text-right text-slate-500">{item.quantity} {item.unit}</td>
+                              <td className="py-1 text-right font-medium">{quote.currency} {item.total.toLocaleString()}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      <div className="flex justify-between items-center pt-1 border-t">
+                        <span className="font-bold text-slate-900">Total</span>
+                        <span className="text-lg font-bold text-orange-500">{quote.currency} {quote.total_amount.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  )}
+                  {job.metadata && (
+                    <details className="text-xs text-slate-500">
+                      <summary className="cursor-pointer font-medium text-slate-600 hover:text-slate-800">
+                        Ingestion details
+                      </summary>
+                      <div className="mt-1 pl-2 border-l-2 border-slate-200 space-y-0.5">
+                        <p>Method: {(job.metadata as any).ingestion_method ?? "unknown"}</p>
+                        {(job.metadata as any).coverage !== undefined && (
+                          <p>Coverage: {((job.metadata as any).coverage * 100).toFixed(0)}%</p>
+                        )}
+                        {(job.metadata as any).time_steps !== undefined && (
+                          <p>Time steps: {(job.metadata as any).time_steps}</p>
+                        )}
+                        {(job.metadata as any).fallback_level !== undefined && (
+                          <p>Fallback: level {(job.metadata as any).fallback_level}</p>
+                        )}
+                        {(job.metadata as any).deferred_precision && (
+                          <p className="text-orange-600">Deferred precision (90d median)</p>
+                        )}
+                        {(job.metadata as any).error && (
+                          <p className="text-red-500">Error: {(job.metadata as any).error}</p>
+                        )}
+                      </div>
+                    </details>
+                  )}
+                  <p className="text-xs text-slate-400">
+                    Tier-0 preliminary estimate (±30% range). Binding quotes require Tier-1 or Tier-3.
+                  </p>
+                  {job.overlay_image_s3_key && (
+                    <a
+                      href={job.overlay_image_s3_key}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block text-sm text-orange-600 hover:underline font-medium"
+                    >
+                      View mask GeoTIFF →
+                    </a>
+                  )}
+                </div>
+              )}
+              {job.status === "failed" && (
+                <p className="text-sm text-red-600">Analysis failed. Please try again or contact support.</p>
+              )}
+              {job.status === "requires_review" && (
+                <p className="text-sm text-orange-600">Result flagged for human review before quoting.</p>
+              )}
+            </div>
+          )}
+
+          {/* Instructions */}
+          {!jobId && (
+            <div className="text-sm text-slate-500 space-y-2">
+              <p className="font-medium text-slate-700">How to use:</p>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>Zoom to your building on the map.</li>
+                <li>Select the polygon tool (top-left).</li>
+                <li>Click around your roof to draw the boundary.</li>
+                <li>Click <strong>Analyze Roof</strong> to submit.</li>
+              </ol>
+              <p className="pt-2 text-xs text-slate-400">
+                This is a free preliminary estimate (Tier-0). For a binding quote, upgrade to Tier-1 or Tier-3.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

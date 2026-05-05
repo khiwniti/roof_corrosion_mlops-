@@ -2,13 +2,13 @@
 name = "roof-corrosion-ml"
 version = "0.1.0"
 description = "ML training pipeline for roof corrosion detection"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "torch>=2.3.0",
     "torchvision>=0.18.0",
     "transformers>=4.41.0",
     "segment-anything>=1.0",
-    "detectron2>=0.6",
+    "detectron2",
     "albumentations>=1.4.0",
     "rasterio>=1.3.0",
     "shapely>=2.0.0",
@@ -23,9 +23,23 @@ dependencies = [
     "evidently>=0.4.0",
     "label-studio-sdk>=0.0.18",
     "boto3>=1.34.0",
-    "omegaconf>=2.4.0",
+    "omegaconf>=2.1.0",
     "rich>=13.7.0",
     "tqdm>=4.66.0",
+    # Phase 1a: CDSE ingestion stack
+    "pystac-client>=0.9.0",
+    "odc-stac>=0.3.11",
+    "openeo>=0.48.0",
+    "cubo>=2026.2.0",
+    "planetary-computer>=1.0.0",
+    # Phase 1a: cloud masking
+    "omnicloudmask>=1.7.0",
+    "s2cloudless>=1.7.0",
+    "xarray>=2024.1.0",
+    "rioxarray>=0.15.0",
+    # Phase 1a: feature extraction + classifier
+    "scikit-image>=0.23.0",
+    "segmentation-models-pytorch>=0.3.0",
 ]
 
 [project.optional-dependencies]
