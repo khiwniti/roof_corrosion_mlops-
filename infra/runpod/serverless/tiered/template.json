@@ -1,0 +1,72 @@
+{
+  "title": "Roof Corrosion Tiered Hybrid Inference",
+  "description": "Tiered hybrid pipeline: Tier-0 Sentinel-2 free preliminary (±30%) + Tier-1 Pléiades/THEOS-2 binding quote (±15%). Clay + Mask2Former multi-task model.",
+  "type": "serverless",
+  "category": "image",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 15,
+    "gpuTypeIds": [
+      "NVIDIA RTX A4000",
+      "NVIDIA RTX A2000",
+      "Tesla T4"
+    ],
+    "workersMin": 0,
+    "workersMax": 5,
+    "idleTimeout": 300,
+    "flashboot": true,
+    "imageName": "docker.io/khiwnitigetintheq/roof-corrosion-tiered:latest",
+    "env": [
+      {
+        "key": "REGION",
+        "value": "TH"
+      },
+      {
+        "key": "PYTHONPATH",
+        "value": "/ml:/app"
+      },
+      {
+        "key": "PYTHONUNBUFFERED",
+        "value": "1"
+      },
+      {
+        "key": "LOG_LEVEL",
+        "value": "INFO"
+      },
+      {
+        "key": "R2_BUCKET",
+        "value": "roof-corrosion-masks"
+      },
+      {
+        "key": "ONEATLAS_API_KEY",
+        "input": {
+          "name": "OneAtlas API Key",
+          "type": "string",
+          "description": "Airbus OneAtlas API key for Pléiades archive search",
+          "default": "",
+          "required": false
+        }
+      },
+      {
+        "key": "THEOS2_CLIENT_ID",
+        "input": {
+          "name": "THEOS-2 Client ID",
+          "type": "string",
+          "description": "GISTDA THEOS-2 API client ID",
+          "default": "",
+          "required": false
+        }
+      },
+      {
+        "key": "THEOS2_CLIENT_SECRET",
+        "input": {
+          "name": "THEOS-2 Client Secret",
+          "type": "string",
+          "description": "GISTDA THEOS-2 API client secret",
+          "default": "",
+          "required": false
+        }
+      }
+    ]
+  }
+}

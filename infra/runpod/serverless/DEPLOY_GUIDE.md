@@ -32,7 +32,23 @@ export NVIDIA_API_KEY=nvapi_xxx      # your NVIDIA NIM key
 
 If you prefer the RunPod web console:
 
-### Inference Endpoint
+### Tiered Hybrid Endpoint (Phase 3)
+1. Go to https://runpod.io/console/serverless/create
+2. Select "Custom Image"
+3. Image: `docker.io/khiwnitigetintheq/roof-corrosion-tiered:latest`
+4. GPU: NVIDIA RTX A4000 (or Tesla T4 for cost savings)
+5. Workers: Min 0, Max 5, Idle Timeout 300s
+6. Environment Variables:
+   - `REGION=TH`
+   - `PYTHONPATH=/ml:/app`
+   - `PYTHONUNBUFFERED=1`
+   - `LOG_LEVEL=INFO`
+   - `ONEATLAS_API_KEY=<optional>`
+   - `THEOS2_CLIENT_ID=<optional>`
+   - `THEOS2_CLIENT_SECRET=<optional>`
+7. Click "Create"
+
+### Inference Endpoint (Legacy — Phase 1a)
 1. Go to https://runpod.io/console/serverless/create
 2. Select "Custom Image"
 3. Image: `docker.io/khiwnitigetintheq/roof-corrosion-inference:latest`
@@ -84,14 +100,15 @@ curl -s -X POST \
 
 | Image | Base | Size | GPU Required | Purpose |
 |-------|------|------|-------------|---------|
-| roof-corrosion-inference | python:3.11.9-slim | ~400MB | Optional (SAM fallback) | FM pipeline: NIM VLM + OSM |
-| roof-corrosion-training | pytorch:2.1.2-cuda12.1 | ~8GB | Yes (A100) | SegFormer training |
-| roof-corrosion-api | python:3.11.9-slim | ~2GB | Optional | FastAPI + quote engine |
+| roof-corrosion-tiered | python:3.11-slim-bookworm | ~1.5GB | Optional (GPU for VHR inference) | Tiered hybrid: S2 triage + VHR binding quote |
+| roof-corrosion-inference | python:3.11.9-slim | ~400MB | Optional (SAM fallback) | FM pipeline: NIM VLM + OSM (legacy) |
+| roof-corrosion-training | pytorch:2.1.2-cuda12.1 | ~8GB | Yes (A100) | Clay + Mask2Former multi-task training |
+| roof-corrosion-api | python:3.11.9-slim | ~2GB | Optional | FastAPI + quote engine (legacy) |
 
 ## CI/CD
 
 Pushing to `main` automatically:
-1. Builds all 3 images via `.github/workflows/cd.yml`
+1. Builds all images via `.github/workflows/cd.yml`
 2. Pushes to Docker Hub (if secrets configured)
 3. Updates RunPod endpoints (if endpoint IDs configured in GitHub vars)
 
@@ -101,5 +118,6 @@ Required GitHub secrets:
 - `RUNPOD_API_KEY`
 
 Required GitHub variables:
+- `RUNPOD_TIERED_ENDPOINT_ID`
 - `RUNPOD_INFERENCE_ENDPOINT_ID`
 - `RUNPOD_TRAINING_ENDPOINT_ID`
