@@ -1,5 +1,5 @@
 # RunPod Serverless — Tiered Hybrid Handler
-# Phase 1a: S2 ingestion → cloud mask → composite → stub segmentation
+# Phase 1a/3: S2/VHR ingestion → cloud mask → composite → classifier → mask
 #
 # Build:
 #   docker build --platform linux/amd64 -t roof-corrosion-tiered:latest .
@@ -20,6 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY handler.py .
 COPY ml/ingestion /ml/ingestion
+COPY ml/inference /ml/inference
+COPY ml/train/models /ml/train/models
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/ml:$PYTHONPATH

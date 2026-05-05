@@ -13,3 +13,7 @@ geopandas>=1.0.0
 # Phase 1a: cloud masking
 omnicloudmask>=1.7.0
 s2cloudless>=1.7.0
+# Phase 3: VHR APIs + inference
+requests>=2.31.0
+torch>=2.2.0
+scikit-image>=0.23.0
