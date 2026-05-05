@@ -11,8 +11,7 @@ help: ## Show this help
 # ── Install ──────────────────────────────────────────────────
 install: ## Install all dependencies
 	cd apps/web && pnpm install
-	cd services/api && uv venv .venv --python 3.11 && . .venv/bin/activate && uv pip install -e ".[dev]"
-	cd ml && uv venv .venv --python 3.11 && . .venv/bin/activate && uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu && uv pip install -e ".[dev]"
+	uv sync --all-packages --all-extras
 
 # ── Development ──────────────────────────────────────────────
 dev: ## Start all services (web + API + worker) via pnpm
@@ -51,46 +50,64 @@ docker-logs: ## Tail logs from all services
 
 # ── Testing ──────────────────────────────────────────────────
 test-api: ## Run API tests
-	cd services/api && . .venv/bin/activate && pytest tests/ -v
+	uv run --package roof-corrosion-api pytest services/api/tests/ -v
+
+test-ml: ## Run ML tests
+	uv run --package roof-corrosion-ml pytest ml/tests/ -v --tb=short
 
 test-web: ## Run web build check
 	cd apps/web && pnpm build
 
 test-licenses: ## Check data license compliance
-	python3 ml/data/check_licenses.py
+	uv run python ml/data/check_licenses.py
 
-test: test-api test-web test-licenses ## Run all tests
+test: test-api test-ml test-web test-licenses ## Run all tests
 
 # ── ML Training ──────────────────────────────────────────────
 train-stage1: ## Train Stage 1 roof model (needs GPU)
-	cd ml && . .venv/bin/activate && python ml/baseline/train_stage1_roof.py --config ml/baseline/configs/stage1_roof.yaml
+	uv run --package roof-corrosion-ml python ml/baseline/train_stage1_roof.py --config ml/baseline/configs/stage1_roof.yaml
 
 train-stage2: ## Train Stage 2 corrosion model (needs GPU)
-	cd ml && . .venv/bin/activate && python ml/baseline/train_stage2_corrosion.py --config ml/baseline/configs/stage2_corrosion.yaml
+	uv run --package roof-corrosion-ml python ml/baseline/train_stage2_corrosion.py --config ml/baseline/configs/stage2_corrosion.yaml
 
 train-baseline: ## Run full Phase 1a baseline flow via Prefect
-	cd ml && . .venv/bin/activate && python ml/flows/baseline_flow.py
+	uv run --package roof-corrosion-ml python ml/flows/baseline_flow.py
+
+train-multitask: ## Train Clay + Mask2Former multi-task model (Phase 2)
+	uv run --package roof-corrosion-ml python ml/train/train_multitask.py --config ml/train/configs/clay_multitask.yaml
+
+retrain-hitl: ## Run HITL retrain flow (Phase 4/5)
+	uv run --package roof-corrosion-ml python ml/flows/retrain_flow.py
 
 # ── Evaluation ───────────────────────────────────────────────
 eval-frozen: ## Evaluate model on frozen test set
-	cd ml && . .venv/bin/activate && python ml/baseline/eval_frozen.py --model-uri $(MODEL_URI) --frozen-dir data/frozen_test
+	uv run --package roof-corrosion-ml python ml/baseline/eval_frozen.py --model-uri $(MODEL_URI) --frozen-dir data/frozen_test
 
 eval-drift: ## Run drift monitoring check
-	cd ml && . .venv/bin/activate && python ml/eval/drift_monitor.py
+	uv run --package roof-corrosion-ml python ml/eval/drift_monitor.py
+
+eval-seasonal: ## Run seasonal drift detection
+	uv run --package roof-corrosion-ml python ml/eval/seasonal_drift.py
+
+eval-cml: ## Run CML PR evaluation
+	uv run --package roof-corrosion-ml python ml/eval/cml_pr_eval.py --output-dir reports/cml
+
+eval-nannyml: ## Run NannyML label-free performance estimation
+	uv run --package roof-corrosion-ml python ml/eval/nannyml_estimator.py
 
 # ── Data ─────────────────────────────────────────────────────
 data-download: ## Download open datasets (interactive — requires accounts)
 	bash ml/baseline/data/download_datasets.sh all
 
 data-frozen-setup: ## Create frozen test set directory structure
-	cd ml && . .venv/bin/activate && python ml/baseline/data/frozen_test_setup.py
+	uv run --package roof-corrosion-ml python ml/baseline/data/frozen_test_setup.py
 
 # ── Lint ─────────────────────────────────────────────────────
 lint-api: ## Lint API code
-	cd services/api && . .venv/bin/activate && ruff check . && ruff format --check .
+	uv run --package roof-corrosion-api ruff check services/api/ && uv run --package roof-corrosion-api ruff format --check services/api/
 
 lint-ml: ## Lint ML code
-	cd ml && . .venv/bin/activate && ruff check . && ruff format --check .
+	uv run --package roof-corrosion-ml ruff check ml/ && uv run --package roof-corrosion-ml ruff format --check ml/
 
 lint-web: ## Lint web code
 	cd apps/web && pnpm lint
@@ -103,11 +120,17 @@ clean: ## Remove build artifacts and caches
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name node_modules -exec rm -rf {} + 2>/dev/null || true
-	rm -rf apps/web/.next services/api/.venv ml/.venv .turbo
+	rm -rf apps/web/.next .venv .turbo uv.lock
 
 # ── Production Docker ─────────────────────────────────────────
 DOCKER_USERNAME ?= khiwnitigetintheq
 DOCKER_TAG ?= latest
+
+docker-build-tiered: ## Build tiered handler Docker image (prod)
+	docker buildx build --platform linux/amd64 \
+		-f infra/runpod/serverless/tiered/Dockerfile \
+		-t docker.io/$(DOCKER_USERNAME)/roof-corrosion-tiered:$(DOCKER_TAG) \
+		.
 
 docker-build-inference: ## Build inference Docker image (prod)
 	docker buildx build --platform linux/amd64 \
@@ -127,7 +150,10 @@ docker-build-api: ## Build API Docker image (prod)
 		-t docker.io/$(DOCKER_USERNAME)/roof-corrosion-api:$(DOCKER_TAG) \
 		services/api
 
-docker-build: docker-build-inference docker-build-training docker-build-api ## Build all production images
+docker-build: docker-build-tiered docker-build-inference docker-build-training docker-build-api ## Build all production images
+
+docker-push-tiered: ## Push tiered image to registry
+	docker push docker.io/$(DOCKER_USERNAME)/roof-corrosion-tiered:$(DOCKER_TAG)
 
 docker-push-inference: ## Push inference image to registry
 	docker push docker.io/$(DOCKER_USERNAME)/roof-corrosion-inference:$(DOCKER_TAG)
@@ -138,9 +164,12 @@ docker-push-training: ## Push training image to registry
 docker-push-api: ## Push API image to registry
 	docker push docker.io/$(DOCKER_USERNAME)/roof-corrosion-api:$(DOCKER_TAG)
 
-docker-push: docker-push-inference docker-push-training docker-push-api ## Push all images
+docker-push: docker-push-tiered docker-push-inference docker-push-training docker-push-api ## Push all images
 
 # ── Production Deploy ─────────────────────────────────────────
+deploy-tiered: ## Deploy tiered handler to RunPod Serverless
+	bash scripts/deploy-production.sh tiered
+
 deploy-inference: ## Deploy inference to RunPod Serverless
 	bash scripts/deploy-production.sh inference
 
