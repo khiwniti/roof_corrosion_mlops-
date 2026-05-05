@@ -313,7 +313,16 @@ export default function PortalPage() {
               )}
               {job.status === "completed" && (
                 <div className="space-y-3">
-                  <p className="text-sm text-green-700 font-medium">Analysis complete</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-green-700 font-medium">Analysis complete</p>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      (job.metadata as any)?.tier === 1
+                        ? "bg-blue-100 text-blue-700"
+                        : "bg-slate-100 text-slate-600"
+                    }`}>
+                      Tier {(job.metadata as any)?.tier ?? 0}
+                    </span>
+                  </div>
                   <div className="grid grid-cols-2 gap-2 text-sm">
                     <div className="bg-white rounded p-2 border">
                       <p className="text-xs text-slate-500">Buildings</p>
@@ -411,8 +420,31 @@ export default function PortalPage() {
                       </div>
                     </details>
                   )}
+                  {(job.metadata as any)?.tier === 1 && (
+                    <div className="bg-blue-50 rounded p-2 text-xs space-y-1">
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">Imagery cost (est.)</span>
+                        <span className="font-medium text-slate-900">
+                          {(job.metadata as any)?.cost_estimate_thb
+                            ? `THB ${(job.metadata as any).cost_estimate_thb.toLocaleString()}`
+                            : "Pending"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-600">Quote band</span>
+                        <span className="font-medium text-blue-700">{(job.metadata as any)?.quote_band ?? "±15%"}</span>
+                      </div>
+                      {(job.metadata as any)?.requires_human_review && (
+                        <p className="text-orange-600 font-medium">
+                          Flagged: exceeds THB 100k threshold — estimator review required
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <p className="text-xs text-slate-400">
-                    Tier-0 preliminary estimate (±30% range). Binding quotes require Tier-1 or Tier-3.
+                    {(job.metadata as any)?.tier === 1
+                      ? "Tier-1 binding estimate. Imagery cost billed separately."
+                      : "Tier-0 preliminary estimate (±30% range). Binding quotes require Tier-1 or Tier-3."}
                   </p>
                   {job.overlay_image_s3_key && (
                     <a

@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     if (ingestion_meta) {
       updatePayload.metadata = ingestion_meta;
     }
-    // Tier-0 result fields stored in metadata for now
+    // Tier-0 / Tier-1 result fields stored in metadata
     if (body.area_m2 !== undefined || body.building_count !== undefined || body.coarse_breakdown) {
       updatePayload.metadata = {
         ...(updatePayload.metadata || {}),
@@ -34,6 +34,16 @@ export async function POST(request: NextRequest) {
         class_percentages: body.class_percentages,
         coarse_breakdown: body.coarse_breakdown,
         confidence: body.confidence,
+      };
+    }
+    // Tier-1 extra fields
+    if (body.cost_estimate_eur !== undefined || body.quote_band) {
+      updatePayload.metadata = {
+        ...(updatePayload.metadata || {}),
+        cost_estimate_eur: body.cost_estimate_eur,
+        cost_estimate_thb: body.cost_estimate_thb,
+        quote_band: body.quote_band,
+        requires_human_review: body.requires_human_review,
       };
     }
 
